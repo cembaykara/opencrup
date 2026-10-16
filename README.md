@@ -8,6 +8,11 @@ beautiful dashboard so you can *actually* see what your agents have been up to.
 
 No cap. Zero dependencies. Just Python 3 stdlib doing the most.
 
+![OpenCrup home screen](docs/home.png)
+
+Pick a source, dive in. Only the sources it actually finds show up — plus a `+` to point
+it at a Cursor install it couldn't auto-detect.
+
 ---
 
 ## 🚀 The Vibe
@@ -23,6 +28,7 @@ It's giving organization. It's giving control. **Vibe check: passed.**
 ## ✨ Features (the good stuff)
 
 - **Two sources, one UI** — opencode (SQLite) + Cursor (`.jsonl` transcripts), picked from a home screen.
+- **Cross-platform source scan** — auto-detects opencode + Cursor on macOS / Windows / Linux; a `+` adds a Cursor install it missed.
 - **Project grouping** — everything per project, for both sources.
 - **Read** — markdown, collapsible "thinking", tool calls (input + output), system events.
 - **Multi-select + bulk** — anchor + shift-click a span, then delete / archive / unarchive.
@@ -62,6 +68,20 @@ python3 server.py
 | `OPENCODE_DB`     | `~/.local/share/opencode/opencode.db`| opencode DB |
 | `CURSOR_PROJECTS` | `~/.cursor/projects`                 | Cursor transcripts root |
 
+## 🧪 Dev mode (mock data)
+
+Want to poke at the opencode view without exposing your real conversations? A throwaway
+build spins up a temp DB full of fake sessions/projects and serves it on a separate port:
+
+```bash
+python3 dev_mock.py            # → http://127.0.0.1:4322 (mock data, temp DB)
+python3 dev_mock.py -p 5000    # custom port
+```
+
+No real data touched — the DB lives in a temp dir and is gone when you quit.
+
+![OpenCrup opencode view (mock data)](docs/opencode_view.png)
+
 ## 🤖 Tech (for the non-slop folks)
 
 - Python 3 stdlib only — `http.server` + `sqlite3`. No `pip install`, no build step, no node.
@@ -75,14 +95,16 @@ python3 server.py
 | `server.py` | the whole backend — routing, opencode DB, Cursor transcript parsing, the six-store purge |
 | `public/index.html` | the whole frontend — single file, no framework, no bundler |
 | `purge_cursor.py` | standalone purge CLI — `python3 purge_cursor.py <uuid\|prefix> [--dry-run]` |
+| `dev_mock.py` | throwaway dev build — fake opencode data on a separate port |
 | `start.sh` | the launcher |
 
-That's it. Four files. A monolith — but a *vibed* one.
+That's it. Five files. A monolith — but a *vibed* one.
 
 ## 🔌 Endpoints (quick)
 
 - opencode: `GET/POST /api/sessions`, `GET/PATCH/DELETE /api/sessions/:id`, `PATCH/DELETE /api/messages/:id`
 - cursor: the same under `/api/cursor`, plus `POST /api/cursor/sessions/:id/purge`
+- sources: `GET /api/sources` (presence + count), `POST /api/sources/cursor` (save a picked path)
 - `:id` is `<project-slug>::<transcript-uuid>`
 
 ---
