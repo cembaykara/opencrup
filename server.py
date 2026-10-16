@@ -500,6 +500,11 @@ def move_opencode_to_cursor(conn, sid, directory, delete_original=False):
     tdir = cursor_projects_dir() / slug / "agent-transcripts" / uuid
     tdir.mkdir(parents=True, exist_ok=True)
     (tdir / f"{uuid}.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    # remember the real path so the project shows a clean label, not the raw slug
+    try:
+        (cursor_projects_dir() / slug / ".opencrup-path").write_text(directory)
+    except OSError:
+        pass
     _CURSOR_CACHE.clear()
     if delete_original:
         conn.execute("DELETE FROM session_v2 WHERE id = ?", (sid,))  # messages cascade
@@ -683,7 +688,17 @@ def _cursor_real_path(slug):
             f = f.replace("file://", "")
             s = f.lstrip("/").replace("/", "-").replace(".", "-").replace("%20", "-").replace(" ", "-")
             _CURSOR_PATHS.setdefault(s, f)
-    return _CURSOR_PATHS.get(slug, slug)
+    if slug in _CURSOR_PATHS:
+        return _CURSOR_PATHS[slug]
+    # explicit path OpenCrup saved when it moved a transcript into this project
+    # (Cursor's own workspace.json only knows projects it has natively opened)
+    try:
+        p = (cursor_projects_dir() / slug / ".opencrup-path").read_text().strip()
+        if p:
+            return p
+    except OSError:
+        pass
+    return slug
 
 
 def _cursor_slug_from_path(path):
