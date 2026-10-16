@@ -461,18 +461,74 @@ def bulk_sessions(conn, body):
     return {"action": action, "affected": len(done), "ids": done}
 
 
-def _register_cursor_conversation(cuuid, title, body):
-    """Register a moved-in transcript in Cursor's conversation-search.db.
+def _cursor_root_fingerprint(cuuid, title, recency, is_archived, message_ids, branches):
+    """Replicate Cursor's root_fingerprint (conversationSearchMain.js `$7`).
 
-    Writing the .jsonl alone makes OpenCrup (a filesystem scanner) see it, but
-    the real Cursor app lists history from this index, so we also add the
-    conversation + FTS row + candidate. Best-effort: a schema change in a
-    future Cursor version should not break the move.
+    SHA-256 over the JSON of [conversationId, title, recency, isArchived,
+    messageIds, branches, ...]. This is the gate Cursor's reconciliation uses
+    to decide whether a locally-injected row survives; matching it means the
+    real app keeps the conversation instead of cleaning it up.
     """
-    db = _cursor_appdata_dir() / "User" / "globalStorage" / "conversation-search.db"
+    arr = [cuuid, title, recency, is_archived, message_ids, branches]
+    return hashlib.sha256(
+        json.dumps(arr, separators=(",", ":")).encode("utf-8", "replace")
+    ).hexdigest()
+
+
+def _register_cursor_conversation(cuuid, title, body, headers, now_ms):
+    """Make a moved-in transcript show in the *real* Cursor app.
+
+    Two stores, both required:
+      1. The composer store (globalStorage/state.vscdb, table cursorDiskKV,
+         key `composerData:<uuid>`). Cursor's reconciliation reads this,
+         computes the root_fingerprint from the composer's headers, and
+         upserts the index row. Without it the row gets dropped on cleanup.
+      2. The search index (globalStorage/conversation-search.db). We write the
+         row ourselves (with the matching fingerprint) so it appears
+         immediately, before Cursor's next reconciliation.
+
+    `headers` is the list of {bubbleId, type} (type 1=user, 2=assistant), one
+    per transcript line — its bubbleIds become the fingerprint's messageIds.
+    Best-effort: a schema change in a future Cursor version should not break
+    the move.
+    """
+    gs = _cursor_appdata_dir() / "User" / "globalStorage"
+    message_ids = [h["bubbleId"] for h in headers
+                   if isinstance(h, dict) and h.get("type") in (1, 2)
+                   and isinstance(h.get("bubbleId"), str)]
+    fingerprint = _cursor_root_fingerprint(cuuid, title, now_ms, False, message_ids, "")
+
+    # 1) composer store — the source of truth the reconciliation reads
+    src = gs / "state.vscdb"
+    if src.is_file():
+        try:
+            conn = sqlite3.connect(str(src))
+            composer = {
+                "_v": 3,
+                "composerId": cuuid,
+                "name": title,
+                "richText": title,
+                "text": title,
+                "fullConversationHeadersOnly": headers,
+                "conversationMap": {},
+                "status": "completed",
+                "createdAt": now_ms,
+                "lastUpdatedAt": now_ms,
+                "unifiedMode": "agent",
+                "isAgentic": True,
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
+                (f"composerData:{cuuid}", json.dumps(composer)))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+    # 2) search index — immediate visibility with the matching fingerprint
+    db = gs / "conversation-search.db"
     if not db.is_file():
         return
-    now_ms = int(time.time() * 1000)
     try:
         conn = sqlite3.connect(str(db))
         cur = conn.execute(
@@ -483,8 +539,7 @@ def _register_cursor_conversation(cuuid, title, body):
             "INSERT INTO conversations (fts_rowid, source, scope, id, title, branches,"
             " updated_at, is_archived, root_fingerprint, cache_fingerprint)"
             " VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (fts_rowid, "local", "", cuuid, title, "", now_ms, 0,
-             hashlib.sha256(body.encode("utf-8", "replace")).hexdigest(), None))
+            (fts_rowid, "local", "", cuuid, title, "", now_ms, 0, fingerprint, None))
         conn.execute(
             "INSERT INTO conversation_search_candidates (id, updated_at) VALUES (?,?)",
             (cuuid, now_ms))
@@ -554,7 +609,12 @@ def move_opencode_to_cursor(conn, sid, directory, delete_original=False):
             break
     body = " ".join(c.get("text", "") for l in lines for c in l["message"]["content"]
                     if isinstance(c, dict) and c.get("type") == "text")
-    _register_cursor_conversation(cuuid, title[:80], body)
+    # one composer header per transcript line (type 1=user, 2=assistant); the
+    # bubbleIds become the fingerprint's messageIds
+    headers = [{"bubbleId": str(uuid.uuid4()), "type": 1 if l["role"] == "user" else 2}
+               for l in lines]
+    _register_cursor_conversation(cuuid, title[:80], body, headers,
+                                  int(time.time() * 1000))
     _CURSOR_CACHE.clear()
     if delete_original:
         conn.execute("DELETE FROM session_v2 WHERE id = ?", (sid,))  # messages cascade
