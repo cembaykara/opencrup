@@ -116,6 +116,11 @@ def random_slug():
 
 
 def detect_version():
+    """The installed opencode version, read live from `opencode --version`.
+
+    Returns e.g. "2.0.29", or "unknown" when opencode isn't on PATH. We don't
+    pin to a specific version — whatever is installed (and anything newer) works.
+    """
     try:
         out = subprocess.run(["opencode", "--version"], capture_output=True,
                              text=True, timeout=5)
@@ -124,7 +129,7 @@ def detect_version():
             return m.group(1)
     except Exception:
         pass
-    return "2.0.29"
+    return "unknown"
 
 
 OPENCODE_VERSION = detect_version()
@@ -1003,7 +1008,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send_json(200, {
                             "home": str(Path.home()),
                             "db": str(DB_PATH),
-                            "version": OPENCODE_VERSION,
+                            "version": detect_version(),
                         })
                     if path == "/api/projects":
                         return self._send_json(200, list_projects(conn))
