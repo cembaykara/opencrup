@@ -869,14 +869,14 @@ async function openMoveModal(sessionId, currentDir) {
   const targetLabel = target === "cursor" ? "Cursor" : "opencode";
 
   // Existing projects in the target source — the move lands in one of these.
+  // Fetch by target (not the current view), so cursor -> opencode lists
+  // opencode's projects even while the Cursor view is active.
   let options = [];
   try {
-    if (target === "cursor") {
-      const projs = await api("/api/cursor/projects");
-      options = projs.map((p) => p.worktree);
-    } else {
-      options = state.projects.map((p) => p.worktree);
-    }
+    const projs = target === "cursor"
+      ? await api("/api/cursor/projects")
+      : await api("/api/projects");
+    options = projs.map((p) => p.worktree);
   } catch (e) { /* best-effort */ }
 
   const backdrop = document.createElement("div");
