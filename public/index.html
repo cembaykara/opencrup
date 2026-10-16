@@ -1,0 +1,1381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCrup</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg2: #161b22;
+    --bg3: #1c2129;
+    --bg4: #232a35;
+    --border: #2d333b;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+  }
+  /* while Shift is held: no text selection anywhere — set explicitly on every
+     element (not just inherited) so no descendant can opt back in */
+  body.shift-held, body.shift-held * {
+    -webkit-user-select: none;
+    user-select: none !important;
+  }
+  button { font: inherit; cursor: pointer; }
+  input, select, textarea { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  /* ---------- top bar ---------- */
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 16px;
+    background: var(--bg2);
+    border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
+  }
+  header .logo { font-weight: 700; font-size: 15px; }
+  header .logo span { color: var(--accent); }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .spacer { flex: 1; }
+  .btn {
+    background: var(--bg3); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font-size: 13px;
+  }
+  .btn:hover { background: var(--bg4); }
+  .btn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  .btn.primary:hover { background: #388bfd; }
+  .btn.danger { color: var(--red); }
+  .btn.danger:hover { background: rgba(248, 81, 73, .12); border-color: var(--red); }
+  /* inline SVG icons: fully hidden (no reserved gap) until the button is hovered */
+  .btn .ic { width: 13px; height: 13px; margin-left: 6px; vertical-align: -2px; display: none; }
+  .btn:hover .ic { display: inline-block; }
+  .btn.small { padding: 3px 8px; font-size: 12px; }
+
+  /* ---------- layout ---------- */
+  main { display: flex; flex: 1; min-height: 0; }
+  aside {
+    width: 320px; flex: 0 0 320px;
+    border-right: 1px solid var(--border);
+    background: var(--bg2);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .filters { padding: 10px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
+  .filters .row { display: flex; gap: 8px; align-items: center; }
+  .filters input[type="search"] { flex: 1; }
+  .filters select { flex: 1; }
+  .filters label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+  #f-selcount { flex: 0 0 auto; white-space: nowrap; }
+
+  #session-list { overflow-y: auto; flex: 1; }
+  input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
+  /* bulk action icons live in the Transcripts row, right before the funnel (shown only with a selection) */
+  .bulk-bar {
+    display: none; align-items: center; gap: 4px; margin-left: auto;
+  }
+  .bulk-bar .icon-btn { padding: 3px 7px; }
+  .bulk-bar .icon-btn svg { width: 14px; height: 14px; }
+  [data-tip] { position: relative; }
+  [data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%; transform: translateX(-50%);
+    background: var(--bg4);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 11px; line-height: 1.3;
+    padding: 3px 8px;
+    border-radius: 6px;
+    white-space: nowrap;
+    z-index: 40;
+    pointer-events: none;
+  }
+  /* rightmost button: anchor to its right edge so the tip stays inside the sidebar */
+  .bulk-bar button:last-child[data-tip]:hover::after {
+    left: auto; right: 0; transform: none;
+  }
+  .session-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    display: flex; gap: 8px; align-items: flex-start;
+  }
+  .si-text { flex: 1; min-width: 0; }
+  .session-item:hover { background: var(--bg3); }
+  .session-item.selected {
+    background: rgba(88, 166, 255, .13);
+    border-left-color: var(--accent);
+  }
+  .session-item.selected:hover { background: rgba(88, 166, 255, .2); }
+  /* the latest clicked item (anchor) stands out from the rest of the selection */
+  .session-item.active {
+    background: rgba(88, 166, 255, .3);
+    border-left-color: var(--accent);
+  }
+  .session-item .title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-item .meta { color: var(--muted); font-size: 11.5px; margin-top: 3px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge {
+    display: inline-block; padding: 0 6px; border-radius: 10px;
+    font-size: 10.5px; line-height: 16px; border: 1px solid var(--border);
+    color: var(--muted); background: var(--bg);
+  }
+  .badge.agent { color: var(--purple); border-color: rgba(188, 140, 255, .4); }
+  .badge.archived { color: var(--yellow); border-color: rgba(210, 153, 34, .5); }
+  .badge.model { color: var(--accent); border-color: rgba(88, 166, 255, .4); }
+
+  /* ---------- project groups ---------- */
+  .proj-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px;
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    position: sticky; top: 0; z-index: 5;
+    font-size: 12px;
+  }
+  .proj-head:hover { background: var(--bg4); }
+  .proj-toggle { color: var(--muted); width: 12px; flex: 0 0 auto; }
+  .proj-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+  .proj-head .badge { flex: 0 0 auto; }
+  /* list title row: "Transcripts" + filter icon (tapping the icon swaps in the project dropdown) */
+  .list-title {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--bg2);
+  }
+  .list-title-text { font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  /* filter icon: tapping it reveals a project menu below (selected item gets a checkmark) */
+  .filter-wrap { position: relative; margin-left: auto; }
+  .filter-icon {
+    background: none; border: none; cursor: pointer; color: var(--muted);
+    padding: 3px; display: flex; align-items: center; border-radius: 4px;
+  }
+  .filter-icon:hover { color: var(--text); background: var(--bg4); }
+  .filter-icon svg { width: 14px; height: 14px; }
+  .filter-menu {
+    position: absolute; top: calc(100% + 4px); right: 0; z-index: 50;
+    min-width: 220px; max-width: 320px; max-height: 320px; overflow-y: auto;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .4); display: none;
+  }
+  .filter-menu.open { display: block; }
+  .filter-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .filter-item:hover { background: var(--bg4); }
+  .filter-item .check { width: 14px; flex: 0 0 auto; color: var(--accent); }
+  .filter-item .label { overflow: hidden; text-overflow: ellipsis; }
+  /* select-all checkbox (left of the title) */
+  .list-title .selectall { display: flex; align-items: center; cursor: pointer; }
+  .list-title .selectall input { width: 14px; height: 14px; cursor: pointer; }
+  /* separator inside the filter menu (above the "Show archived" toggle) */
+  .filter-sep { height: 1px; margin: 5px 8px; background: var(--border); }
+
+  /* ---------- detail pane ---------- */
+  #detail { flex: 1; overflow-y: auto; min-width: 0; }
+  .empty {
+    height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: var(--muted); gap: 8px;
+  }
+  .empty .big { font-size: 40px; }
+  .detail-inner { max-width: 900px; margin: 0 auto; padding: 20px 24px 80px; }
+
+  .sess-head { border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 18px; }
+  .sess-head h1 { font-size: 20px; margin: 0 0 8px; }
+  .sess-head .title-input { font-size: 20px; font-weight: 700; width: 100%; }
+  .sess-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--muted); font-size: 12px; }
+  .sess-meta .k { color: var(--muted); }
+  .sess-meta .v { color: var(--text); }
+  .sess-meta select {
+    font-size: 12px; padding: 1px 6px; border-radius: 4px;
+    max-width: 300px; text-overflow: ellipsis;
+  }
+  /* project combo: select + fused "…" button on the trailing edge */
+  .proj-combo { display: inline-flex; align-items: stretch; border: 1px solid var(--border); border-radius: 4px; }
+  .proj-combo select {
+    border: none; border-radius: 0; font-size: 12px; padding: 1px 6px;
+    max-width: 260px; text-overflow: ellipsis;
+  }
+  .proj-combo .combo-more {
+    border: none; border-left: 1px solid var(--border); border-radius: 0;
+    background: var(--bg3); color: var(--text); padding: 0 9px;
+    cursor: pointer; font-size: 13px; line-height: 1;
+  }
+  .proj-combo .combo-more:hover { background: var(--bg4); }
+  .spinner {
+    display: inline-block; width: 11px; height: 11px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .sess-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .copyable { cursor: pointer; }
+  .copyable:hover { color: var(--accent); }
+
+  /* ---------- messages ---------- */
+  .msg { display: flex; gap: 12px; margin-bottom: 18px; }
+  .avatar {
+    flex: 0 0 30px; width: 30px; height: 30px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; margin-top: 2px;
+  }
+  .avatar.user { background: rgba(63, 185, 80, .15); color: var(--green); }
+  .avatar.assistant { background: rgba(88, 166, 255, .15); color: var(--accent); }
+  .msg-body { flex: 1; min-width: 0; }
+  .msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; position: relative; }
+  .msg-head .name { font-weight: 600; font-size: 13px; }
+  .msg-head .time { color: var(--muted); font-size: 11.5px; }
+  /* actions are absolutely positioned so showing/hiding them never shifts the layout */
+  .msg-head .actions { position: absolute; right: 0; top: 0; height: 100%; display: none; align-items: center; gap: 4px; }
+  .msg:hover .msg-head .actions { display: flex; }
+  /* compact icon-only buttons (message edit/delete) */
+  .icon-btn { padding: 2px 6px; line-height: 1; }
+  .icon-btn svg { width: 13px; height: 13px; vertical-align: -2px; }
+  .msg-content {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; overflow-wrap: break-word;
+  }
+  .msg.user .msg-content { background: rgba(63, 185, 80, .06); }
+  .msg-content p { margin: 0 0 8px; }
+  .msg-content p:last-child { margin-bottom: 0; }
+  .msg-content pre {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 10px; overflow-x: auto; font-size: 12px; line-height: 1.45;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .msg-content code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    background: var(--bg4); border-radius: 4px; padding: 1px 5px;
+  }
+  .msg-content pre code { background: none; padding: 0; }
+  .msg-content a { color: var(--accent); }
+
+  details.thinking, details.tool, details.compaction {
+    border: 1px solid var(--border); border-radius: 6px; margin: 6px 0;
+    background: var(--bg);
+  }
+  details.thinking summary, details.tool summary, details.compaction summary {
+    padding: 6px 10px; cursor: pointer; color: var(--muted); font-size: 12px;
+    user-select: none; list-style: none;
+  }
+  details.thinking summary::before { content: "◦ "; }
+  details.tool summary::before { content: "⚙ "; }
+  details.compaction summary::before { content: "⧉ "; }
+  details.thinking[open] summary, details.tool[open] summary, details.compaction[open] summary { color: var(--text); border-bottom: 1px solid var(--border); }
+  details .inner { padding: 8px 10px; font-size: 12.5px; }
+  details .inner pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  .tool-name { font-weight: 600; color: var(--accent); }
+  .tool-status { font-size: 11px; padding: 0 6px; border-radius: 8px; }
+  .tool-status.completed { color: var(--green); background: rgba(63,185,80,.12); }
+  .tool-status.error { color: var(--red); background: rgba(248,81,73,.12); }
+  .tool-status.pending { color: var(--yellow); background: rgba(210,153,34,.12); }
+
+  .sysline { text-align: center; color: var(--muted); font-size: 12px; margin: 10px 0; }
+  .sysline .pill { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 2px 12px; display: inline-block; }
+
+  .edit-box { width: 100%; min-height: 120px; resize: vertical; font-family: inherit; background: var(--bg); }
+  .edit-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+  /* ---------- modal ---------- */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    display: flex; align-items: center; justify-content: center; z-index: 50;
+  }
+  .modal {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+    width: 480px; max-width: calc(100vw - 40px); padding: 20px;
+  }
+  .modal h2 { margin: 0 0 14px; font-size: 16px; }
+  .modal .field { margin-bottom: 12px; }
+  .modal .field label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .modal .field input, .modal .field select { width: 100%; }
+  .modal .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+  /* ---------- toast ---------- */
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 16px; font-size: 13px; z-index: 100;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  #toast.show { opacity: 1; }
+  #toast.error { border-color: var(--red); color: var(--red); }
+  #toast.ok { border-color: var(--green); color: var(--green); }
+
+  /* ---------- home / source picker ---------- */
+  #home, #viewer { flex: 1; min-height: 0; }
+  #viewer { display: flex; flex-direction: column; }
+  .hidden { display: none !important; }
+  #home {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; padding: 40px;
+  }
+  .home-title { font-size: 26px; font-weight: 700; }
+  .home-sub { color: var(--muted); font-size: 14px; margin-bottom: 18px; }
+  .home-cards { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
+  .source-card {
+    width: 230px; padding: 30px 20px; text-align: center;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 14px;
+    cursor: pointer; transition: transform .12s, border-color .12s, background .12s;
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+  }
+  .source-card:hover { transform: translateY(-3px); border-color: var(--accent); background: var(--bg3); }
+  .source-card .icon { width: 56px; height: 56px; display: flex; align-items: center; justify-content: center; }
+  .source-card .icon svg { width: 46px; height: 46px; }
+  .source-card .name { font-size: 18px; font-weight: 700; }
+  .source-card .desc { color: var(--muted); font-size: 12px; }
+  .source-card .count { color: var(--muted); font-size: 11px; }
+  .source-card.add { border-style: dashed; }
+  .source-card.add .icon svg { width: 34px; height: 34px; }
+</style>
+</head>
+<body>
+
+<div id="home">
+  <div class="home-title">OpenCrup</div>
+  <div class="home-sub">Browse your AI conversations</div>
+  <div class="home-cards" id="home-cards"></div>
+</div>
+
+<div id="viewer" class="hidden">
+<header>
+  <button class="btn" id="btn-home" title="Back to home">← Home</button>
+  <div class="logo" id="app-logo">Open<span>Crup</span></div>
+  <div class="sub" id="db-sub"></div>
+  <div class="spacer"></div>
+  <button class="btn" id="btn-refresh" title="Refresh list">↻ Refresh</button>
+  <button class="btn primary" id="btn-new">+ New session</button>
+</header>
+
+<main>
+  <aside>
+    <div class="filters">
+      <input type="search" id="f-search" placeholder="Search title, id, directory…">
+      <div class="row">
+        <span class="badge" id="f-count"></span>
+        <span class="spacer" style="flex:1"></span>
+        <span class="badge" id="f-selcount">0 selected</span>
+      </div>
+    </div>
+    <div class="list-title">
+      <label class="selectall" title="Select all"><input type="checkbox" id="f-selectall"></label>
+      <span class="list-title-text">Transcripts</span>
+      <div class="bulk-bar" id="bulk-bar">
+        <button class="btn small icon-btn" id="bulk-archive" data-tip="Archive selected — hidden unless “show archived” is on" title="Archive selected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg></button>
+        <button class="btn small icon-btn" id="bulk-unarchive" data-tip="Unarchive selected — back to the active list" title="Unarchive selected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M12 18v-6"/><path d="M9 15l3-3 3 3"/></svg></button>
+        <button class="btn small icon-btn danger" id="bulk-delete" data-tip="Permanently delete selected sessions and all their messages" title="Delete selected"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+      </div>
+      <div class="filter-wrap">
+        <button class="filter-icon" id="f-filter" title="Filter by project" aria-label="Filter by project">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg>
+        </button>
+        <div class="filter-menu" id="f-menu"></div>
+      </div>
+    </div>
+    <div id="session-list"></div>
+  </aside>
+  <section id="detail">
+    <div class="empty">
+      <div class="big">💬</div>
+      <div>Select a conversation to view it</div>
+    </div>
+  </section>
+</main>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------------------
+// state
+// ---------------------------------------------------------------------------
+const state = {
+  source: null, // "opencode" | "cursor" | null (home)
+  sessions: [],
+  projects: [],
+  models: [],
+  selectedId: null,
+  detail: null,
+  selected: new Set(),
+  selectAnchor: null, // id of the last clicked row, for shift-click range select
+  collapsedProjects: new Set(), // project keys whose group is collapsed
+  projectFilter: "", // project id the list is filtered to ("" = all projects)
+  showArchived: false, // include archived sessions in the list
+};
+
+const $ = (sel) => document.querySelector(sel);
+const detailEl = $("#detail");
+
+// ---------------------------------------------------------------------------
+// utils
+// ---------------------------------------------------------------------------
+function escapeHtml(s) {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function md(text) {
+  const codes = [];
+  let s = escapeHtml(text);
+  s = s.replace(/```(\w*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+    codes.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
+    return `\u0000${codes.length - 1}\u0000`;
+  });
+  s = s.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\n/g, "<br>");
+  s = s.replace(/\u0000(\d+)\u0000/g, (m, i) => codes[Number(i)]);
+  return s;
+}
+
+function relTime(ts) {
+  if (!ts) return "";
+  const d = Date.now() - ts;
+  const min = Math.floor(d / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+function fmtTime(ts) {
+  return ts ? new Date(ts).toLocaleString() : "";
+}
+
+function shortModel(modelStr) {
+  if (!modelStr) return null;
+  try {
+    const m = JSON.parse(modelStr);
+    return m.variant ? `${m.id}#${m.variant}` : m.id;
+  } catch { return modelStr; }
+}
+
+function tilde(p) {
+  const home = window.__home;
+  if (p && home && p.startsWith(home)) return "~" + p.slice(home.length);
+  return p || "";
+}
+
+function toast(msg, type = "ok") {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => (el.className = ""), 2500);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "content-type": "application/json" },
+    ...opts,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+// source-aware API base + path builders
+const API_BASE = { opencode: "/api", cursor: "/api/cursor" };
+function base() { return API_BASE[state.source] || "/api"; }
+function sessionsUrl(params) {
+  const p = new URLSearchParams();
+  if (params.q) p.set("q", params.q);
+  if (params.project) p.set(state.source === "cursor" ? "project" : "project_id", params.project);
+  if (params.archived) p.set("archived", "1");
+  return `${base()}/sessions?${p}`;
+}
+function messageUrl(mid) {
+  if (state.source === "cursor")
+    return `${base()}/sessions/${encodeURIComponent(state.detail.id)}/messages/${encodeURIComponent(mid)}`;
+  return `${base()}/messages/${encodeURIComponent(mid)}`;
+}
+
+// ---------------------------------------------------------------------------
+// loading
+// ---------------------------------------------------------------------------
+async function loadProjects() {
+  state.projects = await api(base() + "/projects");
+  renderFilterMenu();
+}
+
+// Build the project filter menu (All projects + each project); the active one gets a checkmark
+function renderFilterMenu() {
+  const menu = $("#f-menu");
+  if (!menu) return;
+  const items = [
+    { id: "", label: "All projects" },
+    ...state.projects.map((p) => ({ id: p.id, label: `${tilde(p.worktree)} (${p.session_count})` })),
+  ];
+  const projHtml = items.map((it) => {
+    const active = it.id === state.projectFilter;
+    return `<div class="filter-item" data-kind="project" data-id="${escapeHtml(it.id)}">
+      <span class="check">${active ? "✓" : ""}</span>
+      <span class="label">${escapeHtml(it.label)}</span>
+    </div>`;
+  }).join("");
+  const archHtml = `<div class="filter-sep"></div>
+    <div class="filter-item" data-kind="archived">
+      <span class="check">${state.showArchived ? "✓" : ""}</span>
+      <span class="label">Show archived</span>
+    </div>`;
+  menu.innerHTML = projHtml + archHtml;
+  menu.querySelectorAll(".filter-item").forEach((el) => {
+    el.addEventListener("click", () => {
+      if (el.dataset.kind === "archived") {
+        state.showArchived = !state.showArchived;
+      } else {
+        state.projectFilter = el.dataset.id;
+      }
+      closeFilterMenu();
+      renderFilterMenu();
+      loadSessions();
+    });
+  });
+}
+function closeFilterMenu() {
+  const menu = $("#f-menu");
+  if (menu) menu.classList.remove("open");
+}
+
+async function loadModels() {
+  if (state.source === "cursor") { state.models = []; return; }
+  state.models = await api(base() + "/models");
+}
+
+async function loadSessions() {
+  const q = $("#f-search").value.trim();
+  const project = state.projectFilter;
+  const archived = state.showArchived;
+  state.sessions = await api(sessionsUrl({ q, project, archived }));
+  // drop selections (and the range anchor) that are no longer in the visible list
+  const visible = new Set(state.sessions.map((s) => s.id));
+  for (const id of [...state.selected]) if (!visible.has(id)) state.selected.delete(id);
+  if (state.selectAnchor && !visible.has(state.selectAnchor)) state.selectAnchor = null;
+  renderSessionList();
+}
+
+async function refreshAll() {
+  await Promise.all([loadProjects(), loadModels(), loadSessions()]);
+}
+
+// ---------------------------------------------------------------------------
+// session list
+// ---------------------------------------------------------------------------
+function projectKey(s) {
+  return s.project_worktree || s.directory || "(unknown)";
+}
+
+// Group sessions by project, ordered by most recent activity per project.
+// Archived sessions are pulled into their own "Archived" group (pinned last).
+// Returns an array of [groupKey, [session, ...]] pairs.
+function groupedSessions() {
+  const groups = new Map();
+  for (const s of state.sessions) {
+    const k = s.time_archived ? "__archived__" : projectKey(s);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  }
+  const latest = (items) => Math.max(0, ...items.map((s) => s.time_updated || 0));
+  const entries = [...groups.entries()];
+  entries.sort((a, b) => {
+    if (a[0] === "__archived__") return 1;
+    if (b[0] === "__archived__") return -1;
+    return latest(b[1]) - latest(a[1]);
+  });
+  return entries;
+}
+
+function renderSessionList() {
+  const el = $("#session-list");
+  $("#f-count").textContent = `${state.sessions.length} sessions`;
+  if (state.sessions.length === 0) {
+    el.innerHTML = '<div class="empty" style="height:auto;padding:40px 10px">No sessions found</div>';
+    updateSelectionUI();
+    return;
+  }
+  const groups = groupedSessions();
+  el.innerHTML = groups.map(([key, items]) => {
+    const collapsed = state.collapsedProjects.has(key);
+    const name = key === "__archived__" ? "Archived" : tilde(key);
+    return `
+      <div class="proj-group" data-proj="${escapeHtml(key)}">
+        <div class="proj-head" data-proj="${escapeHtml(key)}">
+          <span class="proj-toggle">${collapsed ? "▸" : "▾"}</span>
+          <span class="proj-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+          <span class="badge">${items.length}</span>
+        </div>
+        <div class="proj-items" style="display:${collapsed ? "none" : "block"}">
+          ${items.map(sessionItemHtml).join("")}
+        </div>
+      </div>`;
+  }).join("");
+  el.querySelectorAll(".session-item").forEach((node) =>
+    node.addEventListener("click", (e) => {
+      if (e.shiftKey) {
+        e.preventDefault();
+        rangeSelect(node.dataset.id);
+      } else {
+        clickItem(node.dataset.id);
+      }
+    })
+  );
+  el.querySelectorAll(".proj-head").forEach((node) =>
+    node.addEventListener("click", () => toggleProject(node.dataset.proj))
+  );
+  updateSelectionUI();
+}
+
+function sessionItemHtml(s) {
+  const title = s.title || s.slug || s.id;
+  const model = shortModel(s.model);
+  const cls = [
+    "session-item",
+    s.id === state.selectAnchor ? "active" : "",
+    state.selected.has(s.id) ? "selected" : "",
+  ].filter(Boolean).join(" ");
+  return `
+    <div class="${cls}" data-id="${s.id}">
+      <div class="si-text">
+        <div class="title">${escapeHtml(title)}</div>
+        <div class="meta">
+          <span>${relTime(s.time_updated)}</span>
+          <span>·</span>
+          <span>${s.message_count} msg</span>
+          ${s.agent ? `<span class="badge agent">${escapeHtml(s.agent)}</span>` : ""}
+          ${model ? `<span class="badge model">${escapeHtml(model)}</span>` : ""}
+          ${s.time_archived ? `<span class="badge archived">archived</span>` : ""}
+        </div>
+      </div>
+    </div>`;
+}
+
+function toggleProject(key) {
+  if (state.collapsedProjects.has(key)) state.collapsedProjects.delete(key);
+  else state.collapsedProjects.add(key);
+  let group = null;
+  document.querySelectorAll(".proj-group").forEach((g) => { if (g.dataset.proj === key) group = g; });
+  if (!group) return renderSessionList();
+  const collapsed = state.collapsedProjects.has(key);
+  group.querySelector(".proj-items").style.display = collapsed ? "none" : "block";
+  group.querySelector(".proj-toggle").textContent = collapsed ? "▸" : "▾";
+}
+
+function toggleSelect(id, on) {
+  if (on) state.selected.add(id);
+  else state.selected.delete(id);
+  updateSelectionUI();
+}
+
+// Plain click: select only this row (clears the rest) and open it.
+function clickItem(id) {
+  state.selected.clear();
+  state.selected.add(id);
+  selectSession(id);
+}
+
+// Shift-click: select the inclusive span between the anchor row and this row,
+// replacing the previous selection; this row becomes the new anchor (the
+// "latest selected" item) and is opened.
+function rangeSelect(id) {
+  const ids = groupedSessions().map((g) => g[1]).flat().map((s) => s.id);
+  const a = ids.indexOf(state.selectAnchor);
+  const b = ids.indexOf(id);
+  if (a === -1) {
+    clickItem(id); // no anchor yet: behave like a plain click
+    return;
+  }
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  state.selected.clear();
+  for (let i = lo; i <= hi; i++) state.selected.add(ids[i]);
+  selectSession(id);
+}
+
+// Click on empty space (not on a row): clear the selection.
+function clearSelection() {
+  if (state.selected.size === 0 && !state.selectAnchor) return;
+  state.selected.clear();
+  state.selectAnchor = null;
+  updateSelectionUI();
+}
+
+function updateSelectionUI() {
+  const n = state.selected.size;
+  $("#f-selcount").textContent = `${n} selected`;
+  const bar = $("#bulk-bar");
+  bar.style.display = n > 0 ? "flex" : "none";
+  const all = $("#f-selectall");
+  all.checked = state.sessions.length > 0 && state.sessions.every((s) => state.selected.has(s.id));
+  all.indeterminate = n > 0 && !all.checked;
+  // sync row highlights without a full re-render (keeps scroll position)
+  document.querySelectorAll("#session-list .session-item").forEach((el) => {
+    el.classList.toggle("selected", state.selected.has(el.dataset.id));
+    el.classList.toggle("active", el.dataset.id === state.selectAnchor);
+  });
+}
+
+async function bulkAction(action) {
+  const ids = [...state.selected];
+  if (ids.length === 0) return;
+  const verb = action === "delete" ? "deleted" : action === "archive" ? "archived" : "unarchived";
+  if (action === "delete" && !confirm(`Delete ${ids.length} session(s) and all their messages? This cannot be undone.`)) return;
+  try {
+    const res = await api(`${base()}/sessions/bulk`, { method: "POST", body: { action, ids } });
+    toast(`${res.affected} session(s) ${verb}`);
+    if (state.selectedId && state.selected.has(state.selectedId)) {
+      state.detail = null;
+      state.selectedId = null;
+      detailEl.innerHTML = '<div class="empty"><div class="big">💬</div><div>Select a conversation to view it</div></div>';
+    }
+    state.selected.clear();
+    state.selectAnchor = null;
+    await loadSessions();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+// ---------------------------------------------------------------------------
+// session detail
+// ---------------------------------------------------------------------------
+async function selectSession(id) {
+  state.selectedId = id;
+  state.selectAnchor = id; // the opened row is the "latest selected" (shift-click anchor)
+  renderSessionList();
+  detailEl.innerHTML = '<div class="empty"><div class="big">⏳</div><div>Loading…</div></div>';
+  try {
+    state.detail = await api(`${base()}/sessions/${encodeURIComponent(id)}`);
+    renderDetail();
+  } catch (err) {
+    detailEl.innerHTML = `<div class="empty"><div class="big">⚠️</div><div>${escapeHtml(err.message)}</div></div>`;
+  }
+}
+
+// <option> list for the project dropdown: every known project, plus the
+// session's current directory if it has no project row yet
+function projectOptions(current) {
+  const known = state.projects.map((p) => p.worktree);
+  const list = known.includes(current)
+    ? state.projects
+    : [{ worktree: current }, ...state.projects];
+  return list.map((p) =>
+    `<option value="${escapeHtml(p.worktree)}"${p.worktree === current ? " selected" : ""}>${escapeHtml(tilde(p.worktree))}</option>`
+  ).join("");
+}
+
+function renderDetail() {
+  const s = state.detail;
+  if (!s) return;
+  const model = shortModel(s.model);
+  const tokens =
+    (s.tokens_input || 0) + (s.tokens_output || 0) + (s.tokens_reasoning || 0) +
+    (s.tokens_cache_read || 0) + (s.tokens_cache_write || 0);
+
+  detailEl.innerHTML = `
+    <div class="detail-inner">
+      <div class="sess-head">
+        <h1 id="sess-title">${escapeHtml(s.title || s.slug || s.id)}</h1>
+        <div class="sess-meta">
+          <span><span class="k">id </span><span class="v mono copyable" id="sess-id" title="click to copy">${s.id}</span></span>
+          ${state.source === "opencode"
+            ? `<span><span class="k">proj </span><span class="proj-combo"><select id="sess-project" title="move this conversation to another project">${projectOptions(s.directory)}</select><button class="combo-more" id="sess-pick" title="choose a project folder…">…</button></span></span>`
+            : `<span><span class="k">proj </span><span class="v mono">${escapeHtml(tilde(s.directory))}</span></span>`}
+          ${s.agent ? `<span><span class="k">agent </span><span class="v">${escapeHtml(s.agent)}</span></span>` : ""}
+          ${model ? `<span><span class="k">model </span><span class="v">${escapeHtml(model)}</span></span>` : ""}
+          <span><span class="k">created </span><span class="v">${fmtTime(s.time_created)}</span></span>
+          <span><span class="k">updated </span><span class="v">${fmtTime(s.time_updated)}</span></span>
+          ${tokens ? `<span><span class="k">tokens </span><span class="v">${tokens.toLocaleString()}</span></span>` : ""}
+          ${s.cost ? `<span><span class="k">cost </span><span class="v">$${Number(s.cost).toFixed(4)}</span></span>` : ""}
+          ${s.time_archived ? `<span class="badge archived">archived</span>` : ""}
+        </div>
+        <div class="sess-actions">
+          <button class="btn small" id="btn-edit-title">Rename<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+          <button class="btn small" id="btn-archive">${s.time_archived ? "Unarchive" : "Archive"}</button>
+          <button class="btn small" id="btn-export">Export JSON</button>
+          <button class="btn small danger" id="btn-delete">Delete<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+        </div>
+      </div>
+      <div id="msg-list"></div>
+    </div>`;
+
+  $("#sess-id").addEventListener("click", () => {
+    navigator.clipboard.writeText(s.id).then(() => toast("session id copied"));
+  });
+  $("#btn-edit-title").addEventListener("click", editSessionTitle);
+  $("#btn-archive").addEventListener("click", toggleArchive);
+  $("#btn-export").addEventListener("click", exportSession);
+  $("#btn-delete").addEventListener("click", deleteSession);
+  // … button (fused to the select's trailing edge): opens the native folder
+  // picker. A button click is a valid user gesture in Safari.
+  const pickBtn = $("#sess-pick");
+  if (pickBtn) pickBtn.addEventListener("click", () => pickProjectDirectory(s.id, s.directory, pickBtn));
+  const projSel = $("#sess-project");
+  if (projSel) projSel.addEventListener("change", (e) => moveSessionTo(s.id, e.target.value));
+  renderMessages();
+}
+
+// Show/hide the spinner inside the "…" button (the trailing-edge combo button)
+function setPickBusy(busy) {
+  const btn = $("#sess-pick");
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.innerHTML = busy ? '<span class="spinner"></span>' : "…";
+}
+
+// Re-home a session to a new directory (shared by the dropdown + path picker)
+async function moveSessionTo(sessionId, directory) {
+  setPickBusy(true);
+  try {
+    await api(`${base()}/sessions/${sessionId}`, { method: "PATCH", body: { directory } });
+    toast("project updated");
+    state.detail = await api(`${base()}/sessions/${sessionId}`);
+    renderDetail(); // rebuilds the meta row (fresh … button)
+    loadSessions();
+  } catch (err) { toast(err.message, "error"); setPickBusy(false); }
+}
+
+// Open a native directory picker that works in Chrome, Safari and Firefox.
+// The picker exposes files with relative paths; we derive the folder name + a
+// child-name fingerprint and let the local backend resolve the full path.
+function pickProjectDirectory(sessionId, currentDir, selectEl) {
+  // Only a <select> needs resetting (a button trigger has no value to restore)
+  const reset = () => { if (selectEl.isConnected && selectEl.tagName === "SELECT") selectEl.value = currentDir; };
+
+  const input = document.createElement("input");
+  input.type = "file";
+  input.multiple = true;
+  input.title = "Move"; // best-effort native dialog title
+  input.setAttribute("webkitdirectory", "");
+  input.setAttribute("directory", "");
+  // Off-screen (not display:none) — Safari won't open the dialog for a
+  // display:none file input triggered outside a direct click gesture.
+  input.style.cssText = "position:fixed; top:0; left:0; width:1px; height:1px; opacity:0; pointer-events:none;";
+  document.body.appendChild(input);
+
+  const cleanup = (ok) => { input.remove(); if (!ok) reset(); };
+
+  input.addEventListener("change", async () => {
+    const files = Array.from(input.files || []);
+    if (!files.length) return cleanup(false);
+    // Spin immediately — resolving a brand-new dir scans the home tree, which
+    // is the slow part (it runs before moveSessionTo would otherwise spin).
+    setPickBusy(true);
+    const rel = files[0].webkitRelativePath || files[0].name;
+    const name = rel.split("/")[0];
+    const children = new Set();
+    for (const f of files) {
+      const s = (f.webkitRelativePath || "").split("/");
+      if (s.length > 1) children.add(s[1]);
+      if (children.size >= 50) break;
+    }
+    try {
+      const res = await api(`${base()}/resolve-dir`, { method: "POST", body: { name, children: [...children] } });
+      if (!res.path) throw new Error("could not resolve path");
+      cleanup(true);
+      await moveSessionTo(sessionId, res.path);
+    } catch (err) {
+      toast(err.message, "error");
+      cleanup(false);
+      setPickBusy(false);
+    }
+  });
+  input.addEventListener("cancel", () => cleanup(false));
+  input.click();
+}
+
+function renderMessages() {
+  const s = state.detail;
+  const el = $("#msg-list");
+  if (!s.messages.length) {
+    el.innerHTML = '<div class="sysline"><span class="pill">no messages yet</span></div>';
+    return;
+  }
+  el.innerHTML = s.messages.map((m) => renderMessage(m)).join("");
+  el.querySelectorAll("[data-edit]").forEach((b) =>
+    b.addEventListener("click", () => editMessage(b.dataset.edit))
+  );
+  el.querySelectorAll("[data-del]").forEach((b) =>
+    b.addEventListener("click", () => deleteMessage(b.dataset.del))
+  );
+}
+
+function renderMessage(m) {
+  const d = m.data || {};
+  const time = fmtTime(m.time_created);
+
+  if (m.type === "user") {
+    return `
+      <div class="msg user" id="msg-${m.id}">
+        <div class="avatar user">You</div>
+        <div class="msg-body">
+          <div class="msg-head">
+            <span class="name">You</span>
+            <span class="time">${time}</span>
+            <span class="actions">
+              <button class="btn small icon-btn" data-edit="${m.id}" title="Edit message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+              <button class="btn small icon-btn danger" data-del="${m.id}" title="Delete message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+            </span>
+          </div>
+          <div class="msg-content">${md(d.text || "")}</div>
+        </div>
+      </div>`;
+  }
+
+  if (m.type === "assistant") {
+    const model = d.model ? `${d.model.id}${d.model.variant ? "#" + d.model.variant : ""}` : "assistant";
+    const parts = (d.content || []).map((c) => {
+      if (c.type === "reasoning") {
+        return `<details class="thinking"><summary>thinking</summary><div class="inner">${md(c.text || "")}</div></details>`;
+      }
+      if (c.type === "text") {
+        return `<div class="msg-content" style="margin-top:6px">${md(c.text || "")}</div>`;
+      }
+      if (c.type === "tool") {
+        const status = c.state?.status || (c.executed ? "completed" : "pending");
+        const input = c.state?.input;
+        const inputStr = input ? (typeof input === "string" ? input : JSON.stringify(input, null, 2)) : "";
+        const output = (c.state?.content || []).map((x) => x.text || "").join("\n");
+        return `
+          <details class="tool">
+            <summary><span class="tool-name">${escapeHtml(c.name || "tool")}</span>
+              <span class="tool-status ${status}">${status}</span></summary>
+            <div class="inner">
+              ${inputStr ? `<div style="margin-bottom:6px;color:var(--muted)">input</div><pre>${escapeHtml(inputStr)}</pre>` : ""}
+              ${output ? `<div style="margin:6px 0 4px;color:var(--muted)">output</div><pre>${escapeHtml(output)}</pre>` : ""}
+            </div>
+          </details>`;
+      }
+      return "";
+    }).join("");
+    return `
+      <div class="msg assistant" id="msg-${m.id}">
+        <div class="avatar assistant">AI</div>
+        <div class="msg-body">
+          <div class="msg-head">
+            <span class="name">${escapeHtml(model)}</span>
+            <span class="time">${time}</span>
+            <span class="actions">
+              <button class="btn small icon-btn" data-edit="${m.id}" title="Edit message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+              <button class="btn small icon-btn danger" data-del="${m.id}" title="Delete message"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
+            </span>
+          </div>
+          ${parts || '<div class="msg-content"><em>(no content)</em></div>'}
+        </div>
+      </div>`;
+  }
+
+  // system / synthetic / idle / switches / compaction
+  let label = "";
+  if (m.type === "system") label = d.text ? d.text.split("\n")[0].slice(0, 120) : "system";
+  else if (m.type === "synthetic") label = d.text || "synthetic";
+  else if (m.type === "idle") label = `idle · ${d.outcome || ""}`;
+  else if (m.type === "agent-switched") label = `agent: ${d.previous || "?"} → ${d.agent || "?"}`;
+  else if (m.type === "model-switched") {
+    const a = d.previous ? d.previous.id : "?";
+    const b = d.model ? d.model.id : "?";
+    label = `model: ${a} → ${b}`;
+  } else if (m.type === "compaction") {
+    return `
+      <details class="compaction" style="max-width:900px;margin:10px auto">
+        <summary>compaction · ${d.reason || ""} · ${d.status || ""}</summary>
+        <div class="inner"><pre>${escapeHtml(d.summary || "")}</pre></div>
+      </details>`;
+  } else label = m.type;
+
+  return `<div class="sysline"><span class="pill">${escapeHtml(label)}</span></div>`;
+}
+
+// ---------------------------------------------------------------------------
+// mutations
+// ---------------------------------------------------------------------------
+async function editSessionTitle() {
+  const s = state.detail;
+  const h1 = $("#sess-title");
+  const input = document.createElement("input");
+  input.className = "title-input";
+  input.value = s.title || "";
+  h1.replaceWith(input);
+  input.focus();
+  input.select();
+  const done = async (save) => {
+    if (save && input.value.trim()) {
+      try {
+        await api(`${base()}/sessions/${s.id}`, { method: "PATCH", body: { title: input.value.trim() } });
+        toast("title updated");
+      } catch (err) { toast(err.message, "error"); }
+    }
+    renderDetail();
+    loadSessions();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") done(true);
+    if (e.key === "Escape") done(false);
+  });
+  input.addEventListener("blur", () => done(true));
+}
+
+async function toggleArchive() {
+  const s = state.detail;
+  try {
+    await api(`${base()}/sessions/${s.id}`, { method: "PATCH", body: { archived: !s.time_archived } });
+    toast(s.time_archived ? "unarchived" : "archived");
+    state.detail = await api(`${base()}/sessions/${s.id}`);
+    renderDetail();
+    loadSessions();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+async function deleteSession() {
+  const s = state.detail;
+  const isCursor = state.source === "cursor";
+  const msg = isCursor
+    ? `Delete "${s.title || s.id}"?\n\nThis purges the conversation from EVERY Cursor store:\n\n• transcript (.jsonl)\n• store.db (encrypted reasoning)\n• search index\n• cloud-sync copy\n• UI state\n• telemetry\n\nThis cannot be undone.`
+    : `Delete session "${s.title || s.id}"?\n\nThis removes the session and all its messages from the opencode database. This cannot be undone.`;
+  if (!confirm(msg)) return;
+  try {
+    const res = await api(`${base()}/sessions/${s.id}`, { method: "DELETE" });
+    const stores = (res.stores || []).join(", ");
+    toast(stores ? `deleted: ${stores}` : "session deleted");
+    state.detail = null;
+    state.selectedId = null;
+    detailEl.innerHTML = '<div class="empty"><div class="big">💬</div><div>Select a conversation to view it</div></div>';
+    await loadSessions();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+function exportSession() {
+  const s = state.detail;
+  const blob = new Blob([JSON.stringify(s, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${(s.title || s.id).replace(/[^\w\- ]/g, "").trim() || s.id}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function editMessage(id) {
+  const m = state.detail.messages.find((x) => x.id === id);
+  if (!m) return;
+  let initial = "";
+  if (m.type === "assistant") {
+    const t = (m.data.content || []).find((c) => c.type === "text");
+    initial = t ? t.text : "";
+  } else {
+    initial = m.data.text || "";
+  }
+  const box = document.createElement("div");
+  box.innerHTML = `
+    <textarea class="edit-box">${escapeHtml(initial)}</textarea>
+    <div class="edit-actions">
+      <button class="btn small primary btn-save">Save</button>
+      <button class="btn small btn-cancel">Cancel</button>
+    </div>`;
+  const target = document.getElementById(`msg-${id}`);
+  const body = target.querySelector(".msg-body");
+  const content = body.querySelector(".msg-content") || body;
+  content.replaceWith(box);
+  const ta = box.querySelector("textarea");
+  ta.focus();
+  const finish = async (save) => {
+    if (save) {
+      try {
+        await api(messageUrl(id), { method: "PATCH", body: { text: ta.value } });
+        toast("message updated");
+      } catch (err) { toast(err.message, "error"); }
+    }
+    state.detail = await api(`${base()}/sessions/${state.detail.id}`);
+    renderDetail();
+  };
+  box.querySelector(".btn-save").addEventListener("click", () => finish(true));
+  box.querySelector(".btn-cancel").addEventListener("click", () => finish(false));
+}
+
+async function deleteMessage(id) {
+  if (!confirm("Delete this message? This cannot be undone.")) return;
+  try {
+    await api(messageUrl(id), { method: "DELETE" });
+    toast("message deleted");
+    state.detail = await api(`${base()}/sessions/${state.detail.id}`);
+    renderDetail();
+    loadSessions();
+  } catch (err) { toast(err.message, "error"); }
+}
+
+// ---------------------------------------------------------------------------
+// new session modal
+// ---------------------------------------------------------------------------
+function openNewSessionModal() {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal">
+      <h2>New session</h2>
+      <div class="field">
+        <label>Title</label>
+        <input id="ns-title" placeholder="What's this conversation about?">
+      </div>
+      <div class="field">
+        <label>Directory (project)</label>
+        <input id="ns-dir" value="${escapeHtml(tildeToHome(""))}" list="ns-dirs">
+        <datalist id="ns-dirs">
+          ${state.projects.map((p) => `<option value="${escapeHtml(p.worktree)}">`).join("")}
+        </datalist>
+      </div>
+      <div class="field">
+        <label>Agent</label>
+        <select id="ns-agent">
+          <option value="build">build</option>
+          <option value="general">general</option>
+          <option value="ask">ask</option>
+          <option value="plan">plan</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Model</label>
+        <select id="ns-model">
+          <option value="">(none)</option>
+          ${state.models.map((m) => {
+            const key = `${m.providerID}/${m.id}${m.variant ? "#" + m.variant : ""}`;
+            return `<option value="${escapeHtml(JSON.stringify(m))}">${escapeHtml(key)}</option>`;
+          }).join("")}
+        </select>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="ns-cancel">Cancel</button>
+        <button class="btn primary" id="ns-create">Create</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  const dirInput = backdrop.querySelector("#ns-dir");
+  dirInput.value = state.projects[0]?.worktree || "";
+  dirInput.focus();
+
+  const close = () => backdrop.remove();
+  backdrop.querySelector("#ns-cancel").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+
+  backdrop.querySelector("#ns-create").addEventListener("click", async () => {
+    const title = backdrop.querySelector("#ns-title").value.trim();
+    const directory = dirInput.value.trim().replace(/^~(?=\/|$)/, osHome());
+    const agent = backdrop.querySelector("#ns-agent").value;
+    const modelRaw = backdrop.querySelector("#ns-model").value;
+    if (!directory) return toast("directory is required", "error");
+    try {
+      const created = await api(`${base()}/sessions`, {
+        method: "POST",
+        body: { title, directory, agent, model: modelRaw ? JSON.parse(modelRaw) : null },
+      });
+      close();
+      toast("session created");
+      await loadSessions();
+      selectSession(created.id);
+    } catch (err) { toast(err.message, "error"); }
+  });
+}
+
+// home dir for ~ expansion (fetched from /api/env)
+function osHome() { return window.__home || ""; }
+function tildeToHome() { return ""; }
+
+// ---------------------------------------------------------------------------
+// init
+// ---------------------------------------------------------------------------
+let searchTimer;
+$("#f-search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(loadSessions, 250);
+});
+// Filter icon: reveal/hide the project menu below it
+$("#f-filter").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const menu = $("#f-menu");
+  if (!menu) return;
+  renderFilterMenu(); // refresh checkmarks before showing
+  menu.classList.toggle("open");
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".filter-wrap")) closeFilterMenu();
+});
+$("#f-selectall").addEventListener("change", (e) => {
+  if (e.target.checked) state.sessions.forEach((s) => state.selected.add(s.id));
+  else state.selected.clear();
+  renderSessionList();
+});
+$("#bulk-archive").addEventListener("click", () => bulkAction("archive"));
+$("#bulk-unarchive").addEventListener("click", () => bulkAction("unarchive"));
+$("#bulk-delete").addEventListener("click", () => bulkAction("delete"));
+$("#btn-refresh").addEventListener("click", () => refreshAll().then(() => toast("refreshed")));
+$("#btn-new").addEventListener("click", openNewSessionModal);
+
+// ---------------------------------------------------------------------------
+// navigation: home <-> viewer
+// ---------------------------------------------------------------------------
+function resetViewerState() {
+  state.selected.clear();
+  state.selectAnchor = null;
+  state.selectedId = null;
+  state.detail = null;
+  state.projectFilter = "";
+  state.showArchived = false;
+}
+function showHome() {
+  state.source = null;
+  resetViewerState();
+  $("#viewer").classList.add("hidden");
+  $("#home").classList.remove("hidden");
+}
+async function showViewer(source) {
+  state.source = source;
+  resetViewerState();
+  $("#home").classList.add("hidden");
+  $("#viewer").classList.remove("hidden");
+  $("#app-logo").innerHTML = 'Open<span>Crup</span>';
+  $("#btn-new").style.display = source === "cursor" ? "none" : "";
+  $("#f-search").value = "";
+  detailEl.innerHTML = '<div class="empty"><div class="big">💬</div><div>Select a conversation to view it</div></div>';
+  try {
+    if (source === "cursor") {
+      const env = await api("/api/cursor/env");
+      window.__home = env.home;
+      $("#db-sub").textContent = `${env.count} conversations · ${env.dir.replace(/^\/Users\/[^/]+/, "~")}`;
+    } else {
+      const env = await api("/api/env");
+      window.__home = env.home;
+      $("#db-sub").textContent = `opencode v${env.version} · ${env.db.replace(/^\/Users\/[^/]+/, "~")}`;
+    }
+  } catch {}
+  await refreshAll().catch((err) => toast(err.message, "error"));
+}
+// home source cards: rendered from /api/sources (only found sources + an "add" card)
+const SOURCE_META = {
+  opencode: {
+    name: "opencode", desc: "opencode sessions",
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="3"/><path d="M7 9.5l3.5 2.5L7 14.5"/><line x1="12.5" y1="14.5" x2="16" y2="14.5"/></svg>',
+  },
+  cursor: {
+    name: "cursor", desc: "Cursor agent chats",
+    icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 3l14 7-6 1.5L9.5 19z"/></svg>',
+  },
+};
+
+function sourceCardHtml(source, info) {
+  const m = SOURCE_META[source];
+  const noun = source === "opencode" ? "sessions" : "conversations";
+  return `<div class="source-card" data-source="${source}">
+    <div class="icon">${m.icon}</div>
+    <div class="name">${m.name}</div>
+    <div class="desc">${m.desc}</div>
+    <div class="count">${info.count} ${noun}</div>
+  </div>`;
+}
+
+function addCardHtml() {
+  return `<div class="source-card add" id="card-add">
+    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div>
+    <div class="name">add</div>
+    <div class="desc">point to Cursor data</div>
+    <div class="count"></div>
+  </div>`;
+}
+
+async function renderHome() {
+  const el = $("#home-cards");
+  let sources = {};
+  try { sources = await api("/api/sources"); } catch {}
+  const cards = [];
+  if (sources.opencode && sources.opencode.found) cards.push(sourceCardHtml("opencode", sources.opencode));
+  if (sources.cursor && sources.cursor.found) cards.push(sourceCardHtml("cursor", sources.cursor));
+  cards.push(addCardHtml()); // always present; max 3 cards total
+  el.innerHTML = cards.join("");
+  el.querySelectorAll(".source-card[data-source]").forEach((c) =>
+    c.addEventListener("click", () => showViewer(c.dataset.source)));
+  const add = el.querySelector("#card-add");
+  if (add) add.addEventListener("click", addSource);
+}
+
+// "+" card: pick a folder, resolve its full path, save it as the Cursor source
+function addSource() {
+  const input = document.createElement("input");
+  input.type = "file"; input.multiple = true;
+  input.setAttribute("webkitdirectory", ""); input.setAttribute("directory", "");
+  input.style.cssText = "position:fixed; top:0; left:0; width:1px; height:1px; opacity:0; pointer-events:none;";
+  document.body.appendChild(input);
+  input.addEventListener("change", async () => {
+    const files = Array.from(input.files || []);
+    input.remove();
+    if (!files.length) return;
+    const rel = files[0].webkitRelativePath || files[0].name;
+    const name = rel.split("/")[0];
+    const children = new Set();
+    for (const f of files) {
+      const s = (f.webkitRelativePath || "").split("/");
+      if (s.length > 1) children.add(s[1]);
+      if (children.size >= 50) break;
+    }
+    try {
+      const res = await api("/api/resolve-dir", { method: "POST", body: { name, children: [...children] } });
+      if (!res.path) throw new Error("could not resolve path");
+      await api("/api/sources/cursor", { method: "POST", body: { path: res.path } });
+      toast("Cursor added");
+      renderHome();
+    } catch (err) { toast(err.message, "error"); }
+  });
+  input.addEventListener("cancel", () => input.remove());
+  input.click();
+}
+
+$("#btn-home").addEventListener("click", showHome);
+// While Shift is held: disable text selection app-wide (shift-click safe)
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Shift") document.body.classList.add("shift-held");
+});
+window.addEventListener("keyup", (e) => {
+  if (e.key === "Shift") document.body.classList.remove("shift-held");
+});
+window.addEventListener("blur", () => document.body.classList.remove("shift-held"));
+// Safety net: if Shift is already held at mousedown (keydown may not have fired),
+// make sure selection is disabled for that drag
+window.addEventListener("mousedown", (e) => {
+  if (e.shiftKey) document.body.classList.add("shift-held");
+});
+// Click outside a row (detail pane, empty list space) clears the selection;
+// the filter/bulk controls are excluded so they keep acting on the selection
+$("main").addEventListener("click", (e) => {
+  if (e.target.closest(".session-item")) return;
+  if (e.target.closest(".filters, .bulk-bar, .proj-head")) return;
+  clearSelection();
+});
+
+(async () => {
+  try {
+    const env = await api("/api/env");
+    window.__home = env.home;
+  } catch {}
+  renderHome();
+})();
+</script>
+</body>
+</html>
