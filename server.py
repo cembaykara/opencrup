@@ -12,6 +12,7 @@ Environment:
     HOST         bind address (default 127.0.0.1)
     OPENCODE_DB  database path (default ~/.local/share/opencode/opencode.db)
 """
+import hashlib
 import json
 import os
 import platform
@@ -22,6 +23,7 @@ import sqlite3
 import string
 import subprocess
 import time
+import uuid
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -459,6 +461,39 @@ def bulk_sessions(conn, body):
     return {"action": action, "affected": len(done), "ids": done}
 
 
+def _register_cursor_conversation(cuuid, title, body):
+    """Register a moved-in transcript in Cursor's conversation-search.db.
+
+    Writing the .jsonl alone makes OpenCrup (a filesystem scanner) see it, but
+    the real Cursor app lists history from this index, so we also add the
+    conversation + FTS row + candidate. Best-effort: a schema change in a
+    future Cursor version should not break the move.
+    """
+    db = _cursor_appdata_dir() / "User" / "globalStorage" / "conversation-search.db"
+    if not db.is_file():
+        return
+    now_ms = int(time.time() * 1000)
+    try:
+        conn = sqlite3.connect(str(db))
+        cur = conn.execute(
+            "INSERT INTO conversation_fts (title, body, branches) VALUES (?,?,?)",
+            (title, body, ""))
+        fts_rowid = cur.lastrowid
+        conn.execute(
+            "INSERT INTO conversations (fts_rowid, source, scope, id, title, branches,"
+            " updated_at, is_archived, root_fingerprint, cache_fingerprint)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (fts_rowid, "local", "", cuuid, title, "", now_ms, 0,
+             hashlib.sha256(body.encode("utf-8", "replace")).hexdigest(), None))
+        conn.execute(
+            "INSERT INTO conversation_search_candidates (id, updated_at) VALUES (?,?)",
+            (cuuid, now_ms))
+        conn.commit()
+        conn.close()
+    except sqlite3.Error:
+        pass
+
+
 def move_opencode_to_cursor(conn, sid, directory, delete_original=False):
     """Copy an opencode session into a Cursor project as a .jsonl transcript.
 
@@ -496,20 +531,35 @@ def move_opencode_to_cursor(conn, sid, directory, delete_original=False):
                                     "input": state.get("input")})
             lines.append({"role": "assistant", "message": {"content": content}})
     slug = _cursor_slug_from_path(directory)
-    uuid = secrets.token_hex(16)
-    tdir = cursor_projects_dir() / slug / "agent-transcripts" / uuid
+    cuuid = str(uuid.uuid4())  # dashed UUID, matching Cursor's own transcript ids
+    tdir = cursor_projects_dir() / slug / "agent-transcripts" / cuuid
     tdir.mkdir(parents=True, exist_ok=True)
-    (tdir / f"{uuid}.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    raw = "\n".join(json.dumps(l) for l in lines) + "\n"
+    (tdir / f"{cuuid}.jsonl").write_text(raw)
     # remember the real path so the project shows a clean label, not the raw slug
     try:
         (cursor_projects_dir() / slug / ".opencrup-path").write_text(directory)
     except OSError:
         pass
+    # register in Cursor's search index so the real app lists it in its history
+    title = ""
+    for l in lines:
+        if l["role"] != "user":
+            continue
+        for c in l["message"]["content"]:
+            if isinstance(c, dict) and c.get("type") == "text" and c.get("text"):
+                title = c["text"].strip()
+                break
+        if title:
+            break
+    body = " ".join(c.get("text", "") for l in lines for c in l["message"]["content"]
+                    if isinstance(c, dict) and c.get("type") == "text")
+    _register_cursor_conversation(cuuid, title[:80], body)
     _CURSOR_CACHE.clear()
     if delete_original:
         conn.execute("DELETE FROM session_v2 WHERE id = ?", (sid,))  # messages cascade
         conn.commit()
-    return {"id": f"{slug}::{uuid}", "slug": slug, "uuid": uuid, "directory": directory}
+    return {"id": f"{slug}::{cuuid}", "slug": slug, "uuid": cuuid, "directory": directory}
 
 
 # ---------------------------------------------------------------------------
