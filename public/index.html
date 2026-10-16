@@ -868,7 +868,7 @@ async function openMoveModal(sessionId, currentDir) {
   const target = state.source === "opencode" ? "cursor" : "opencode";
   const targetLabel = target === "cursor" ? "Cursor" : "opencode";
 
-  // Known project folders in the target source, for the datalist.
+  // Existing projects in the target source — the move lands in one of these.
   let options = [];
   try {
     if (target === "cursor") {
@@ -877,20 +877,22 @@ async function openMoveModal(sessionId, currentDir) {
     } else {
       options = state.projects.map((p) => p.worktree);
     }
-  } catch (e) { /* datalist is best-effort */ }
+  } catch (e) { /* best-effort */ }
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `
     <div class="modal">
       <h2>Move to ${targetLabel}</h2>
-      <p class="modal-sub">Copies this conversation into ${targetLabel} as a new conversation. Tool output and model info may not carry over.</p>
+      <p class="modal-sub">Copies this conversation into an existing ${targetLabel} project as a new conversation. Tool output and model info may not carry over.</p>
       <div class="field">
-        <label>Target project folder</label>
-        <input id="mv-dir" value="${escapeHtml(currentDir || "")}" list="mv-dirs">
-        <datalist id="mv-dirs">
-          ${options.map((d) => `<option value="${escapeHtml(d)}">`).join("")}
-        </datalist>
+        <label>Target project</label>
+        ${options.length
+          ? `<select id="mv-dir">
+               ${options.map((d) => `<option value="${escapeHtml(d)}"${d === currentDir ? " selected" : ""}>${escapeHtml(tilde(d))}</option>`).join("")}
+             </select>`
+          : `<input id="mv-dir" value="${escapeHtml(currentDir || "")}" disabled>
+             <p class="modal-sub">No ${targetLabel} projects found yet.</p>`}
       </div>
       <div class="field">
         <label class="check"><input type="checkbox" id="mv-delete"> Delete the original</label>
