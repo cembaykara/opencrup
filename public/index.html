@@ -878,6 +878,8 @@ async function openMoveModal(sessionId, currentDir) {
       : await api("/api/projects");
     options = projs.map((p) => p.worktree);
   } catch (e) { /* best-effort */ }
+  // Default to the source's own path (preserve it); add it if not already listed.
+  if (currentDir && !options.includes(currentDir)) options.unshift(currentDir);
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
