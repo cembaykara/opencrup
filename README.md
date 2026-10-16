@@ -35,7 +35,7 @@ It's giving organization. It's giving control. **Vibe check: passed.**
 - **Edit & delete messages** — go in and fix the record.
 - **Export** — any session as JSON.
 - **Full purge** — delete a Cursor conversation from *all six stores*. No ghosts. No residue. No cap.
-- **Move between sources** — relocate a conversation opencode → Cursor or Cursor → opencode. It's converted to the target's native format (`.jsonl` ↔ SQLite) and opens right where you left off.
+- **Move between sources** — relocate a conversation opencode → Cursor or Cursor → opencode, picking the destination from a dropdown of the target's existing projects. It's converted to the target's native format (`.jsonl` ↔ SQLite) and opens in OpenCrup's target view. For Cursor, the `.jsonl` is also written into the target project's `agent-transcripts/` so you can import it into the real Cursor app if you want (Cursor owns it once it indexes it).
 
 ## 🐘 The Six-Store Purge (where the magic happens)
 
