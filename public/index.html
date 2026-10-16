@@ -364,7 +364,6 @@
   <div class="sub" id="db-sub"></div>
   <div class="spacer"></div>
   <button class="btn" id="btn-refresh" title="Refresh list">↻ Refresh</button>
-  <button class="btn primary" id="btn-new">+ New session</button>
 </header>
 
 <main>
@@ -1125,82 +1124,6 @@ async function deleteMessage(id) {
 }
 
 // ---------------------------------------------------------------------------
-// new session modal
-// ---------------------------------------------------------------------------
-function openNewSessionModal() {
-  const backdrop = document.createElement("div");
-  backdrop.className = "modal-backdrop";
-  backdrop.innerHTML = `
-    <div class="modal">
-      <h2>New session</h2>
-      <div class="field">
-        <label>Title</label>
-        <input id="ns-title" placeholder="What's this conversation about?">
-      </div>
-      <div class="field">
-        <label>Directory (project)</label>
-        <input id="ns-dir" value="${escapeHtml(tildeToHome(""))}" list="ns-dirs">
-        <datalist id="ns-dirs">
-          ${state.projects.map((p) => `<option value="${escapeHtml(p.worktree)}">`).join("")}
-        </datalist>
-      </div>
-      <div class="field">
-        <label>Agent</label>
-        <select id="ns-agent">
-          <option value="build">build</option>
-          <option value="general">general</option>
-          <option value="ask">ask</option>
-          <option value="plan">plan</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Model</label>
-        <select id="ns-model">
-          <option value="">(none)</option>
-          ${state.models.map((m) => {
-            const key = `${m.providerID}/${m.id}${m.variant ? "#" + m.variant : ""}`;
-            return `<option value="${escapeHtml(JSON.stringify(m))}">${escapeHtml(key)}</option>`;
-          }).join("")}
-        </select>
-      </div>
-      <div class="modal-actions">
-        <button class="btn" id="ns-cancel">Cancel</button>
-        <button class="btn primary" id="ns-create">Create</button>
-      </div>
-    </div>`;
-  document.body.appendChild(backdrop);
-  const dirInput = backdrop.querySelector("#ns-dir");
-  dirInput.value = state.projects[0]?.worktree || "";
-  dirInput.focus();
-
-  const close = () => backdrop.remove();
-  backdrop.querySelector("#ns-cancel").addEventListener("click", close);
-  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
-
-  backdrop.querySelector("#ns-create").addEventListener("click", async () => {
-    const title = backdrop.querySelector("#ns-title").value.trim();
-    const directory = dirInput.value.trim().replace(/^~(?=\/|$)/, osHome());
-    const agent = backdrop.querySelector("#ns-agent").value;
-    const modelRaw = backdrop.querySelector("#ns-model").value;
-    if (!directory) return toast("directory is required", "error");
-    try {
-      const created = await api(`${base()}/sessions`, {
-        method: "POST",
-        body: { title, directory, agent, model: modelRaw ? JSON.parse(modelRaw) : null },
-      });
-      close();
-      toast("session created");
-      await loadSessions();
-      selectSession(created.id);
-    } catch (err) { toast(err.message, "error"); }
-  });
-}
-
-// home dir for ~ expansion (fetched from /api/env)
-function osHome() { return window.__home || ""; }
-function tildeToHome() { return ""; }
-
-// ---------------------------------------------------------------------------
 // init
 // ---------------------------------------------------------------------------
 let searchTimer;
@@ -1228,7 +1151,6 @@ $("#bulk-archive").addEventListener("click", () => bulkAction("archive"));
 $("#bulk-unarchive").addEventListener("click", () => bulkAction("unarchive"));
 $("#bulk-delete").addEventListener("click", () => bulkAction("delete"));
 $("#btn-refresh").addEventListener("click", () => refreshAll().then(() => toast("refreshed")));
-$("#btn-new").addEventListener("click", openNewSessionModal);
 
 // ---------------------------------------------------------------------------
 // navigation: home <-> viewer
@@ -1253,7 +1175,6 @@ async function showViewer(source) {
   $("#home").classList.add("hidden");
   $("#viewer").classList.remove("hidden");
   $("#app-logo").innerHTML = 'Open<span>Crup</span>';
-  $("#btn-new").style.display = source === "cursor" ? "none" : "";
   $("#f-search").value = "";
   detailEl.innerHTML = '<div class="empty"><div class="big">💬</div><div>Select a conversation to view it</div></div>';
   try {
