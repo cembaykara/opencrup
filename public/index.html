@@ -310,6 +310,9 @@
   .modal .field label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
   .modal .field input, .modal .field select { width: 100%; }
   .modal .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .modal .modal-sub { margin: -6px 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .modal .field label.check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; margin-bottom: 0; cursor: pointer; }
+  .modal .field label.check input { width: auto; }
 
   /* ---------- toast ---------- */
   #toast {
@@ -814,6 +817,7 @@ function renderDetail() {
           <button class="btn small" id="btn-edit-title">Rename<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
           <button class="btn small" id="btn-archive">${s.time_archived ? "Unarchive" : "Archive"}</button>
           <button class="btn small" id="btn-export">Export JSON</button>
+          <button class="btn small" id="btn-move" title="Copy this conversation to the other source">${state.source === "opencode" ? "Move to Cursor" : "Move to opencode"}</button>
           <button class="btn small danger" id="btn-delete">Delete<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
         </div>
       </div>
@@ -826,6 +830,7 @@ function renderDetail() {
   $("#btn-edit-title").addEventListener("click", editSessionTitle);
   $("#btn-archive").addEventListener("click", toggleArchive);
   $("#btn-export").addEventListener("click", exportSession);
+  $("#btn-move").addEventListener("click", () => openMoveModal(s.id, s.directory));
   $("#btn-delete").addEventListener("click", deleteSession);
   // … button (fused to the select's trailing edge): opens the native folder
   // picker. A button click is a valid user gesture in Safari.
@@ -854,6 +859,70 @@ async function moveSessionTo(sessionId, directory) {
     renderDetail(); // rebuilds the meta row (fresh … button)
     loadSessions();
   } catch (err) { toast(err.message, "error"); setPickBusy(false); }
+}
+
+// Move a transcript to the other source (opencode <-> Cursor). Asks for the
+// target project folder + whether to delete the original, then converts and
+// jumps to the new conversation in the other source.
+async function openMoveModal(sessionId, currentDir) {
+  const target = state.source === "opencode" ? "cursor" : "opencode";
+  const targetLabel = target === "cursor" ? "Cursor" : "opencode";
+
+  // Known project folders in the target source, for the datalist.
+  let options = [];
+  try {
+    if (target === "cursor") {
+      const projs = await api("/api/cursor/projects");
+      options = projs.map((p) => p.worktree);
+    } else {
+      options = state.projects.map((p) => p.worktree);
+    }
+  } catch (e) { /* datalist is best-effort */ }
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  backdrop.innerHTML = `
+    <div class="modal">
+      <h2>Move to ${targetLabel}</h2>
+      <p class="modal-sub">Copies this conversation into ${targetLabel} as a new conversation. Tool output and model info may not carry over.</p>
+      <div class="field">
+        <label>Target project folder</label>
+        <input id="mv-dir" value="${escapeHtml(currentDir || "")}" list="mv-dirs">
+        <datalist id="mv-dirs">
+          ${options.map((d) => `<option value="${escapeHtml(d)}">`).join("")}
+        </datalist>
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="mv-delete"> Delete the original</label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="mv-cancel">Cancel</button>
+        <button class="btn primary" id="mv-go">Move</button>
+      </div>
+    </div>`;
+  document.body.appendChild(backdrop);
+
+  const close = () => backdrop.remove();
+  backdrop.querySelector("#mv-cancel").addEventListener("click", close);
+  backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
+
+  backdrop.querySelector("#mv-go").addEventListener("click", async () => {
+    const directory = backdrop.querySelector("#mv-dir").value.trim();
+    const del = backdrop.querySelector("#mv-delete").checked;
+    if (!directory) return toast("target folder is required", "error");
+    const btn = backdrop.querySelector("#mv-go");
+    btn.disabled = true; btn.textContent = "Moving…";
+    try {
+      const url = target === "cursor"
+        ? `${base()}/sessions/${encodeURIComponent(sessionId)}/move-to-cursor`
+        : `${base()}/sessions/${encodeURIComponent(sessionId)}/move-to-opencode`;
+      const res = await api(url, { method: "POST", body: { directory, delete_original: del } });
+      close();
+      toast(`moved to ${targetLabel}`);
+      await showViewer(target);   // switches source + reloads the list
+      selectSession(res.id);      // opens the new conversation
+    } catch (err) { toast(err.message, "error"); btn.disabled = false; btn.textContent = "Move"; }
+  });
 }
 
 // Open a native directory picker that works in Chrome, Safari and Firefox.

@@ -35,6 +35,7 @@ It's giving organization. It's giving control. **Vibe check: passed.**
 - **Edit & delete messages** — go in and fix the record.
 - **Export** — any session as JSON.
 - **Full purge** — delete a Cursor conversation from *all six stores*. No ghosts. No residue. No cap.
+- **Move between sources** — relocate a conversation opencode → Cursor or Cursor → opencode. It's converted to the target's native format (`.jsonl` ↔ SQLite) and opens right where you left off.
 
 ## 🐘 The Six-Store Purge (where the magic happens)
 
@@ -104,6 +105,7 @@ That's it. Five files. A monolith — but a *vibed* one.
 
 - opencode: `GET/POST /api/sessions`, `GET/PATCH/DELETE /api/sessions/:id`, `PATCH/DELETE /api/messages/:id`
 - cursor: the same under `/api/cursor`, plus `POST /api/cursor/sessions/:id/purge`
+- move: `POST /api/sessions/:id/move-to-cursor` and `POST /api/cursor/sessions/:id/move-to-opencode` (body: `{directory, delete_original}`)
 - sources: `GET /api/sources` (presence + count), `POST /api/sources/cursor` (save a picked path)
 - `:id` is `<project-slug>::<transcript-uuid>`
 

@@ -459,6 +459,54 @@ def bulk_sessions(conn, body):
     return {"action": action, "affected": len(done), "ids": done}
 
 
+def move_opencode_to_cursor(conn, sid, directory, delete_original=False):
+    """Copy an opencode session into a Cursor project as a .jsonl transcript.
+
+    Reads the session's messages, converts each turn to Cursor's line format
+    (user -> text; assistant -> text/reasoning/tool_use) and writes
+    <projects>/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl. Tool output and
+    model/agent metadata are not part of the Cursor format, so they are dropped.
+    """
+    if not isinstance(directory, str) or not directory:
+        raise HttpError(400, "directory is required")
+    if conn.execute("SELECT id FROM session_v2 WHERE id = ?", (sid,)).fetchone() is None:
+        raise HttpError(404, "session not found")
+    msgs = conn.execute(
+        "SELECT type, data FROM session_message WHERE session_id = ? ORDER BY seq", (sid,)
+    ).fetchall()
+    lines = []
+    for m in msgs:
+        d = json.loads(m["data"]) if isinstance(m["data"], str) else m["data"]
+        if m["type"] == "user":
+            lines.append({"role": "user", "message": {"content": [
+                {"type": "text", "text": d.get("text", "")}]}})
+        else:
+            content = []
+            for c in (d.get("content") or []):
+                if not isinstance(c, dict):
+                    continue
+                t = c.get("type")
+                if t == "text":
+                    content.append({"type": "text", "text": c.get("text", "")})
+                elif t == "reasoning":
+                    content.append({"type": "reasoning", "text": c.get("text", "")})
+                elif t == "tool":
+                    state = c.get("state") or {}
+                    content.append({"type": "tool_use", "name": c.get("name", "tool"),
+                                    "input": state.get("input")})
+            lines.append({"role": "assistant", "message": {"content": content}})
+    slug = _cursor_slug_from_path(directory)
+    uuid = secrets.token_hex(16)
+    tdir = cursor_projects_dir() / slug / "agent-transcripts" / uuid
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / f"{uuid}.jsonl").write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    _CURSOR_CACHE.clear()
+    if delete_original:
+        conn.execute("DELETE FROM session_v2 WHERE id = ?", (sid,))  # messages cascade
+        conn.commit()
+    return {"id": f"{slug}::{uuid}", "slug": slug, "uuid": uuid, "directory": directory}
+
+
 # ---------------------------------------------------------------------------
 # API: messages
 # ---------------------------------------------------------------------------
@@ -638,6 +686,14 @@ def _cursor_real_path(slug):
     return _CURSOR_PATHS.get(slug, slug)
 
 
+def _cursor_slug_from_path(path):
+    """Inverse of the slug formula above: a real folder path -> its Cursor slug."""
+    p = str(path)
+    if p.startswith("file://"):
+        p = p[len("file://"):]
+    return p.lstrip("/").replace("/", "-").replace(".", "-").replace("%20", "-").replace(" ", "-")
+
+
 def cursor_projects():
     counts = {}
     for slug, _uuid, _path in _iter_cursor_transcripts():
@@ -703,6 +759,56 @@ def cursor_get_session(sid):
         "model": None,
         "messages": _parse_cursor_transcript(path),
     }
+
+
+def move_cursor_to_opencode(conn, sid, directory, delete_original=False):
+    """Copy a Cursor .jsonl transcript into the opencode DB as a session.
+
+    Parses the transcript into the unified message shape, creates a session_v2
+    row (under the given project directory) and one session_message row per
+    turn. Cursor transcripts carry no model/agent or timestamps, so the new
+    session is stamped with the current version/agent and now().
+    """
+    if not isinstance(directory, str) or not directory:
+        raise HttpError(400, "directory is required")
+    slug, uuid = sid.split("::", 1)
+    path = _cursor_transcript_path(slug, uuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    msgs = _parse_cursor_transcript(path)
+    now = now_ms()
+    project_id = resolve_project(conn, directory)
+    new_sid = "ses_" + rand_base62(26)
+    conn.execute(
+        """INSERT INTO session_v2
+           (id, project_id, slug, directory, title, version, agent, model, time_created, time_updated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (new_sid, project_id, random_slug(), directory, _cursor_title(path, uuid),
+         OPENCODE_VERSION, "build", None, now, now),
+    )
+    for i, m in enumerate(msgs):
+        d = m["data"]
+        if m["type"] == "user":
+            data = {"time": {"created": now}, "text": d.get("text", ""), "files": [], "agents": []}
+        else:
+            data = {"time": {"created": now}, "agent": "build", "model": None,
+                    "content": d.get("content") or []}
+        conn.execute(
+            """INSERT INTO session_message
+               (id, session_id, type, seq, time_created, time_updated, data)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("msg_" + rand_base62(26), new_sid, m["type"], i + 1, now, now, json.dumps(data)),
+        )
+    conn.commit()
+    if delete_original:
+        path.unlink(missing_ok=True)
+        for ext in (".title", ".archived"):
+            (path.parent / f"{uuid}{ext}").unlink(missing_ok=True)
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+    return {"id": new_sid, "directory": directory}
 
 
 def cursor_update_session(sid, patch):
@@ -970,6 +1076,12 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/cursor/sessions/([^/]+)/purge$", path)
             if m:
                 return self._send_json(200, cursor_purge_session(unquote(m.group(1))))
+            m = re.match(r"^/api/cursor/sessions/([^/]+)/move-to-opencode$", path)
+            if m:
+                with closing(connect()) as conn:
+                    return self._send_json(200, move_cursor_to_opencode(
+                        conn, unquote(m.group(1)), body.get("directory"),
+                        bool(body.get("delete_original"))))
             return self._send_json(404, {"error": "not found"})
         if method == "PATCH":
             body = self._read_body()
@@ -1039,6 +1151,11 @@ class Handler(BaseHTTPRequestHandler):
                             body.get("name"), body.get("children"))})
                     if path == "/api/sources/cursor":
                         return self._send_json(200, add_cursor_source(body.get("path", "")))
+                    m = re.match(r"^/api/sessions/([^/]+)/move-to-cursor$", path)
+                    if m:
+                        return self._send_json(200, move_opencode_to_cursor(
+                            conn, unquote(m.group(1)), body.get("directory"),
+                            bool(body.get("delete_original"))))
                     return self._send_json(404, {"error": "not found"})
 
                 if method == "PATCH":
