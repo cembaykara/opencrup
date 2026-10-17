@@ -1042,6 +1042,43 @@ def cursor_diag():
     return info
 
 
+def cursor_workspace_diag(directory):
+    """For a given project directory, show how the workspace match resolves.
+
+    The sidebar lists from the workspace allComposers, so if
+    _cursor_workspace_db(directory) returns None the moved conversation lands
+    in the global store but never in the sidebar. Reports every workspace's
+    folder URI and which (if any) matches the directory."""
+    ws_root = _cursor_appdata_dir() / "User" / "workspaceStorage"
+    target = Path(directory).expanduser().resolve() if directory else None
+    win = platform.system() == "Windows"
+    norm = (lambda p: str(p).lower()) if win else (lambda p: str(p))
+    target_n = norm(target) if target is not None else None
+    entries = []
+    if ws_root.is_dir():
+        for wj in ws_root.glob("*/workspace.json"):
+            try:
+                folder = json.loads(wj.read_text()).get("folder", "")
+            except (OSError, ValueError):
+                folder = ""
+            path = unquote(urlparse(folder).path) if folder.startswith("file://") else folder
+            cand = Path(path) if path else None
+            entries.append({
+                "workspace": wj.parent.name,
+                "folder": folder,
+                "decoded": str(cand) if cand is not None else None,
+                "match": bool(target_n and cand is not None
+                              and (norm(cand) == target_n
+                                   or norm(cand.resolve()) == target_n)),
+            })
+    return {
+        "directory": str(target) if target is not None else None,
+        "normalized_target": target_n,
+        "resolved_workspace_db": str(_cursor_workspace_db(directory)) if directory else None,
+        "workspaces": entries,
+    }
+
+
 def cursor_projects():
     counts = {}
     for slug, _uuid, _path in _iter_cursor_transcripts():
@@ -1560,6 +1597,10 @@ class Handler(BaseHTTPRequestHandler):
                         })
                     if path == "/api/diag":
                         return self._send_json(200, cursor_diag())
+                    if path == "/api/diag/workspace":
+                        return self._send_json(
+                            200, cursor_workspace_diag(
+                                qs.get("dir", [None])[0]))
                     if path == "/api/projects":
                         return self._send_json(200, list_projects(conn))
                     if path == "/api/models":
