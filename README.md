@@ -1,120 +1,104 @@
-# OpenCrup 💜
+# OpenCrup
 
-> **This is a Vibed Slop to View and edit your agent transcripts.**
-
-✨ The next-gen, hyper-agentic, seamless™ way to peer into the crystal ball of your
-AI conversations. OpenCrup refracts every **opencode** + **Cursor** session into one
-beautiful dashboard so you can *actually* see what your agents have been up to.
-
-No cap. Zero dependencies. Just Python 3 stdlib doing the most.
+A local viewer and editor for [opencode](https://opencode.ai) and Cursor agent transcripts.
 
 ![OpenCrup home screen](docs/home.png)
 
-Pick a source, dive in. Only the sources it actually finds show up — plus a `+` to point
-it at a Cursor install it couldn't auto-detect.
+Pick a source and open a conversation. Only sources that exist on this machine are shown. A `+` lets you point at a Cursor install the scan missed.
 
----
+## What it does
 
-## 🚀 The Vibe
+Browse, search, and group conversations by project. Read markdown, collapsed thinking blocks, tool calls, and system events. Edit or delete individual messages. Select a range and delete, archive, or unarchive in bulk. Export a session as JSON.
 
-Your agents talk. A lot. Across opencode, Cursor, six different local stores,
-encrypted blobs, FTS indexes, cloud-sync copies, and telemetry — the whole ecosystem.
-OpenCrup is the **single pane of glass** (glass, like Cursor's glass, get it) that
-surfaces all of it in one place.
+You can also move a conversation between opencode and Cursor. It is converted to the target format (SQLite or `.jsonl`) and opened in that view. Moving into Cursor writes the `.jsonl` transcript **and** injects the conversation into Cursor's own stores (composer record, message bubbles, workspace sidebar, search index) so it lists and loads in the real Cursor app immediately — not just after Cursor indexes the file. The real app renders each assistant reply from the bubble's text and tool-call data, so those are written per message (visible text, tool calls, and the render gate).
 
-Browse. Search. Group by project. Edit. Delete. Purge from *every* store.
-It's giving organization. It's giving control. **Vibe check: passed.**
+## Run
 
-## ✨ Features (the good stuff)
-
-- **Two sources, one UI** — opencode (SQLite) + Cursor (`.jsonl` transcripts), picked from a home screen.
-- **Cross-platform source scan** — auto-detects opencode + Cursor on macOS / Windows / Linux; a `+` adds a Cursor install it missed.
-- **Project grouping** — everything per project, for both sources.
-- **Read** — markdown, collapsible "thinking", tool calls (input + output), system events.
-- **Multi-select + bulk** — anchor + shift-click a span, then delete / archive / unarchive.
-- **Edit & delete messages** — go in and fix the record.
-- **Export** — any session as JSON.
-- **Full purge** — delete a Cursor conversation from *all six stores*. No ghosts. No residue. No cap.
-- **Move between sources** — relocate a conversation opencode → Cursor or Cursor → opencode, picking the destination from a dropdown of the target's existing projects. It's converted to the target's native format (`.jsonl` ↔ SQLite) and opens in OpenCrup's target view. For Cursor, the `.jsonl` is also written into the target project's `agent-transcripts/` so you can import it into the real Cursor app if you want (Cursor owns it once it indexes it).
-
-## 🐘 The Six-Store Purge (where the magic happens)
-
-A single Cursor conversation lives in **six** places. OpenCrup wipes all of them:
-
-| # | Store | What it is |
-|---|-------|-----------|
-| 1 | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/` | the transcript (source of truth) |
-| 2 | `~/.cursor/chats/<hash>/<uuid>/store.db` | encrypted reasoning blobs |
-| 3 | `conversation-search.db` | search index + FTS + candidates |
-| 4 | `AgentStores/cursor_agent_stores/<uuid>/` | cloud-sync copy |
-| 5 | `state.vscdb` | UI / glass state |
-| 6 | `ai-tracking/ai-code-tracking.db` | telemetry |
-
-**Delete = full purge.** There is no "just the DB". It's gone.
-(Unless Cursor re-syncs it from the cloud — that's a server-side problem, not our problem. 💅)
-
-## 🏃 Run it
+Requires Python 3. No install step.
 
 ```bash
-./start.sh            # → http://127.0.0.1:4321
+./start.sh            # http://127.0.0.1:4321
 ./start.sh -p 8080    # custom port
-# or:
-python3 server.py
+./start.sh -H 0.0.0.0 # bind address
+./start.sh -d /path/to/opencode.db
 ```
 
-| Env var           | Default                              | Meaning |
-|-------------------|--------------------------------------|---------|
-| `PORT`            | `4321`                               | HTTP port |
-| `HOST`            | `127.0.0.1`                          | bind address (we don't leak vibes to the network) |
-| `OPENCODE_DB`     | `~/.local/share/opencode/opencode.db`| opencode DB |
-| `CURSOR_PROJECTS` | `~/.cursor/projects`                 | Cursor transcripts root |
+Or `python3 server.py`.
 
-## 🧪 Dev mode (mock data)
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `4321` | HTTP port |
+| `HOST` | `127.0.0.1` | Bind address |
+| `OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | opencode database |
+| `CURSOR_PROJECTS` | `~/.cursor/projects` | Cursor transcripts root |
 
-Want to poke at the opencode view without exposing your real conversations? A throwaway
-build spins up a temp DB full of fake sessions/projects and serves it on a separate port:
+The server binds to localhost by default. It uses SQLite WAL mode and short transactions, so it can run while opencode is open.
+
+## Dev mode
+
+`dev_mock.py` starts a second server against a temporary database of fake opencode sessions. Your real conversations are not read. The database is removed when the process exits.
 
 ```bash
-python3 dev_mock.py            # → http://127.0.0.1:4322 (mock data, temp DB)
-python3 dev_mock.py -p 5000    # custom port
+python3 dev_mock.py          # http://127.0.0.1:4322
+python3 dev_mock.py -p 5000
 ```
 
-No real data touched — the DB lives in a temp dir and is gone when you quit.
+![OpenCrup opencode view](docs/opencode_view.png)
 
-![OpenCrup opencode view (mock data)](docs/opencode_view.png)
+## Deleting a Cursor conversation
 
-## 🤖 Tech (for the non-slop folks)
+A Cursor conversation is stored in more than the transcript file. Deleting one from OpenCrup removes it from all of these:
 
-- Python 3 stdlib only — `http.server` + `sqlite3`. No `pip install`, no build step, no node.
-- Binds to `127.0.0.1` by default. Not reachable from the network.
-- WAL mode + short transactions → safe to run while opencode itself is live.
+| Store | Path |
+|---|---|
+| Transcript | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/` |
+| Encrypted reasoning | `~/.cursor/chats/<hash>/<uuid>/store.db` |
+| Search index | `conversation-search.db` |
+| Cloud-sync copy | `AgentStores/cursor_agent_stores/<uuid>/` |
+| UI state | `state.vscdb` |
+| Telemetry | `ai-tracking/ai-code-tracking.db` |
 
-## 🧠 Architecture (the real part)
+If Cursor still has a copy on its servers, a later sync can bring the conversation back. That copy is outside this app.
 
-| File | What it is |
-|------|-----------|
-| `server.py` | the whole backend — routing, opencode DB, Cursor transcript parsing, the six-store purge |
-| `public/index.html` | the whole frontend — single file, no framework, no bundler |
-| `purge_cursor.py` | standalone purge CLI — `python3 purge_cursor.py <uuid\|prefix> [--dry-run]` |
-| `dev_mock.py` | throwaway dev build — fake opencode data on a separate port |
-| `start.sh` | the launcher |
+The same purge is available from the command line:
 
-That's it. Five files. A monolith — but a *vibed* one.
+```bash
+python3 purge_cursor.py <uuid-or-prefix> [--dry-run]
+```
 
-## 🔌 Endpoints (quick)
+## Layout
 
-- opencode: `GET/POST /api/sessions`, `GET/PATCH/DELETE /api/sessions/:id`, `PATCH/DELETE /api/messages/:id`
-- cursor: the same under `/api/cursor`, plus `POST /api/cursor/sessions/:id/purge`
-- move: `POST /api/sessions/:id/move-to-cursor` and `POST /api/cursor/sessions/:id/move-to-opencode` (body: `{directory, delete_original}`)
-- sources: `GET /api/sources` (presence + count), `POST /api/sources/cursor` (save a picked path)
-- `:id` is `<project-slug>::<transcript-uuid>`
+| File | Role |
+|---|---|
+| `server.py` | HTTP server, opencode database, Cursor transcript parsing, purge |
+| `public/index.html` | Frontend |
+| `purge_cursor.py` | Standalone purge CLI |
+| `dev_mock.py` | Mock opencode data for local development |
+| `start.sh` | Launcher |
 
----
+Python standard library only (`http.server`, `sqlite3`). No package install and no build step.
 
-<div align="center">
+## API
 
-**OpenCrup** — because your agents deserve a crystal ball. 💜
+opencode routes:
 
-*not a financial advisor · no cap · probably slop*
+- `GET` / `POST /api/sessions`
+- `GET` / `PATCH` / `DELETE /api/sessions/:id`
+- `PATCH` / `DELETE /api/messages/:id`
+- `POST /api/sessions/:id/move-to-cursor` with `{directory, delete_original}`
 
-</div>
+Cursor routes use the same shapes under `/api/cursor`, plus:
+
+- `POST /api/cursor/sessions/:id/purge`
+- `POST /api/cursor/sessions/:id/move-to-opencode` with `{directory, delete_original}`
+
+A Cursor session id is `<project-slug>::<transcript-uuid>`.
+
+Sources:
+
+- `GET /api/sources` — which sources were found, and how many sessions each has
+- `POST /api/sources/cursor` — save a Cursor path the scan missed
+
+## License
+
+MIT. See [LICENSE](LICENSE).
