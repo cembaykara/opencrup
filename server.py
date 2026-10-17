@@ -224,7 +224,11 @@ def get_session(conn, sid):
 
 
 def resolve_project(conn, directory):
-    row = conn.execute("SELECT id FROM project WHERE worktree = ?", (directory,)).fetchone()
+    # A directory can have duplicate project rows (opencode recreates them);
+    # the real app uses the most recent, so match on that, not the first row.
+    row = conn.execute(
+        "SELECT id FROM project WHERE worktree = ? ORDER BY time_created DESC",
+        (directory,)).fetchone()
     if row:
         return row["id"]
     pid = secrets.token_hex(16)
