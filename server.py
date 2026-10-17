@@ -1094,6 +1094,52 @@ def cursor_workspace_diag(directory):
     }
 
 
+def cursor_composer_diag(uuid):
+    """Dump exactly where a moved conversation landed, for a given UUID.
+
+    Reports the global store (composer record + bubble count) and, for every
+    workspace, whether the UUID is in its allComposers (the sidebar source).
+    Lets a Windows user confirm whether the move wrote to the right places."""
+    app_dir = _cursor_appdata_dir()
+    state_db = app_dir / "User" / "globalStorage" / "state.vscdb"
+    info = {"uuid": uuid, "global": {}, "workspaces": []}
+    if state_db.is_file():
+        try:
+            c = sqlite3.connect(str(state_db), timeout=15)
+            comp = c.execute(
+                "select value from cursorDiskKV where key=?",
+                (f"composerData:{uuid}",)).fetchone()
+            nbub = c.execute(
+                "select count(*) from cursorDiskKV where key like ?",
+                (f"bubbleId:{uuid}:%",)).fetchone()[0]
+            c.close()
+            info["global"] = {"composer": bool(comp), "bubbles": nbub}
+        except sqlite3.Error as e:
+            info["global"]["error"] = str(e)
+    ws_root = app_dir / "User" / "workspaceStorage"
+    if ws_root.is_dir():
+        for wdb in ws_root.glob("*/state.vscdb"):
+            try:
+                c = sqlite3.connect(str(wdb), timeout=15)
+                row = c.execute(
+                    "select value from ItemTable where key='composer.composerData'"
+                ).fetchone()
+                c.close()
+                if not row:
+                    continue
+                data = json.loads(row[0].decode() if isinstance(row[0], bytes) else row[0])
+                allc = data.get("allComposers", [])
+                entry = next((ac for ac in allc if ac.get("composerId") == uuid), None)
+                info["workspaces"].append({
+                    "workspace": wdb.parent.name,
+                    "in_all_composers": bool(entry),
+                    "entry": entry,
+                })
+            except (sqlite3.Error, ValueError):
+                continue
+    return info
+
+
 def cursor_projects():
     counts = {}
     for slug, _uuid, _path in _iter_cursor_transcripts():
@@ -1616,6 +1662,10 @@ class Handler(BaseHTTPRequestHandler):
                         return self._send_json(
                             200, cursor_workspace_diag(
                                 qs.get("dir", [None])[0]))
+                    if path == "/api/diag/composer":
+                        return self._send_json(
+                            200, cursor_composer_diag(
+                                qs.get("uuid", [None])[0]))
                     if path == "/api/projects":
                         return self._send_json(200, list_projects(conn))
                     if path == "/api/models":
