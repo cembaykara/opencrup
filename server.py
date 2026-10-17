@@ -991,13 +991,52 @@ def cursor_get_session(sid):
     }
 
 
+def _opencode_default_model(conn):
+    """Return the model object (dict) the real opencode app last used, as a
+    fallback for moved-in sessions. Cursor transcripts carry no model, but the
+    opencode assistant-message schema requires a non-null model object, so we
+    reuse the most recent real one. Returns None if the DB has none."""
+    try:
+        row = conn.execute(
+            "SELECT model FROM session_v2 WHERE model IS NOT NULL "
+            "ORDER BY time_created DESC LIMIT 1").fetchone()
+        if row and row["model"]:
+            return json.loads(row["model"])
+    except (sqlite3.Error, json.JSONDecodeError, TypeError, KeyError):
+        pass
+    return None
+
+
+def _opencode_tool_content(item, idx, now):
+    """Normalize a parsed tool content item into the shape opencode's
+    assistant-message schema accepts. The real app rejects a completed tool
+    whose `state.content` is an empty array, and requires `id`/`executed` and
+    a `time` object, so we fill those in."""
+    state = dict(item.get("state") or {})
+    content = state.get("content")
+    if not content:
+        content = [{"type": "text", "text": ""}]
+    state["content"] = content
+    return {
+        "type": "tool",
+        "name": item.get("name", "tool"),
+        "id": item.get("id") or f"call_0_{idx}",
+        "executed": True,
+        "time": {"created": now},
+        "state": state,
+    }
+
+
 def move_cursor_to_opencode(conn, sid, directory, delete_original=False):
     """Copy a Cursor .jsonl transcript into the opencode DB as a session.
 
     Parses the transcript into the unified message shape, creates a session_v2
     row (under the given project directory) and one session_message row per
     turn. Cursor transcripts carry no model/agent or timestamps, so the new
-    session is stamped with the current version/agent and now().
+    session is stamped with the current version/agent and now(). The assistant
+    messages are normalized to the exact shape the real opencode app decodes
+    (non-null model, time.completed, and well-formed tool content) so the
+    conversation loads in the app, not just in OpenCrup.
     """
     if not isinstance(directory, str) or not directory:
         raise HttpError(400, "directory is required")
@@ -1008,21 +1047,29 @@ def move_cursor_to_opencode(conn, sid, directory, delete_original=False):
     msgs = _parse_cursor_transcript(path)
     now = now_ms()
     project_id = resolve_project(conn, directory)
+    model = _opencode_default_model(conn)
     new_sid = "ses_" + rand_base62(26)
     conn.execute(
         """INSERT INTO session_v2
            (id, project_id, slug, directory, title, version, agent, model, time_created, time_updated)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (new_sid, project_id, random_slug(), directory, _cursor_title(path, uuid),
-         OPENCODE_VERSION, "build", None, now, now),
+         OPENCODE_VERSION, "build",
+         json.dumps(model) if model else None, now, now),
     )
     for i, m in enumerate(msgs):
         d = m["data"]
         if m["type"] == "user":
             data = {"time": {"created": now}, "text": d.get("text", ""), "files": [], "agents": []}
         else:
-            data = {"time": {"created": now}, "agent": "build", "model": None,
-                    "content": d.get("content") or []}
+            content = []
+            for idx, c in enumerate(d.get("content") or []):
+                if c.get("type") == "tool":
+                    content.append(_opencode_tool_content(c, idx, now))
+                else:
+                    content.append(c)
+            data = {"time": {"created": now, "completed": now + 1}, "agent": "build",
+                    "model": model, "content": content}
         conn.execute(
             """INSERT INTO session_message
                (id, session_id, type, seq, time_created, time_updated, data)
