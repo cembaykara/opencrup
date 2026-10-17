@@ -489,15 +489,24 @@ def _cursor_workspace_db(directory):
     ws_root = _cursor_appdata_dir() / "User" / "workspaceStorage"
     if not ws_root.is_dir():
         return None
-    target = str(Path(directory).expanduser().resolve())
+    target = Path(directory).expanduser().resolve()
+    # Windows paths are case-insensitive and the folder URI is a file:// URL
+    # (file:///C:/Users/x/proj), so compare decoded, resolved forms
+    # case-insensitively there; elsewhere a plain resolved comparison works.
+    win = platform.system() == "Windows"
+    norm = (lambda p: str(p).lower()) if win else (lambda p: str(p))
+    target_n = norm(target)
     for wj in ws_root.glob("*/workspace.json"):
         try:
             folder = json.loads(wj.read_text()).get("folder", "")
         except (OSError, ValueError):
             continue
-        # folder is a file:// URI like file:///Users/x/proj
-        path = folder[len("file://"):] if folder.startswith("file://") else folder
-        if path == target:
+        if not folder:
+            continue
+        # decode a file:// URI (file:///C:/Users/x/proj or file:///Users/x/proj)
+        path = unquote(urlparse(folder).path) if folder.startswith("file://") else folder
+        cand = Path(path)
+        if norm(cand) == target_n or norm(cand.resolve()) == target_n:
             return wj.parent / "state.vscdb"
     return None
 
@@ -955,7 +964,7 @@ def _cursor_real_path(slug):
     global _CURSOR_PATHS
     if _CURSOR_PATHS is None:
         _CURSOR_PATHS = {}
-        ws = Path.home() / "Library" / "Application Support" / "Cursor" / "User" / "workspaceStorage"
+        ws = _cursor_appdata_dir() / "User" / "workspaceStorage"
         for j in ws.glob("*/workspace.json"):
             try:
                 d = json.loads(j.read_text())
