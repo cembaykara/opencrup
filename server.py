@@ -656,7 +656,7 @@ def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
     src = gs / "state.vscdb"
     if src.is_file():
         try:
-            conn = sqlite3.connect(str(src))
+            conn = sqlite3.connect(str(src), timeout=15)
             conn.execute(
                 "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
                 (f"composerData:{cuuid}",
@@ -674,7 +674,7 @@ def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
     ws_db = _cursor_workspace_db(directory)
     if ws_db is not None and ws_db.is_file():
         try:
-            conn = sqlite3.connect(str(ws_db))
+            conn = sqlite3.connect(str(ws_db), timeout=15)
             row = conn.execute(
                 "SELECT value FROM ItemTable WHERE key='composer.composerData'"
             ).fetchone()
@@ -708,7 +708,7 @@ def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
     if not db.is_file():
         return
     try:
-        conn = sqlite3.connect(str(db))
+        conn = sqlite3.connect(str(db), timeout=15)
         cur = conn.execute(
             "INSERT INTO conversation_fts (title, body, branches) VALUES (?,?,?)",
             (title, body, ""))
@@ -1019,16 +1019,25 @@ def cursor_diag():
         "workspace_root": str(ws_root),
         "workspace_count": len(list(ws_root.glob("*/state.vscdb"))) if ws_root.is_dir() else 0,
     }
-    # does the global state.vscdb have the tables the move/purge need?
+    # does the global state.vscdb have the tables the move/purge need, and can
+    # we actually WRITE to it (Windows locks it while Cursor runs)?
     if state_db.is_file():
         try:
-            c = sqlite3.connect(str(state_db))
+            c = sqlite3.connect(str(state_db), timeout=15)
             tables = {r[0] for r in c.execute(
                 "select name from sqlite_master where type='table'").fetchall()}
-            c.close()
             info["state_tables"] = sorted(t for t in tables
                                           if t in ("cursorDiskKV", "ItemTable"))
+            # test write: insert + delete a throwaway row, with a busy timeout
+            probe = f"opencrup_diag_{secrets.token_hex(4)}"
+            c.execute("INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
+                      (probe, "diag"))
+            c.execute("DELETE FROM cursorDiskKV WHERE key = ?", (probe,))
+            c.commit()
+            info["write_ok"] = True
+            c.close()
         except sqlite3.Error as e:
+            info["write_ok"] = False
             info["state_error"] = str(e)
     return info
 
@@ -1239,7 +1248,7 @@ def _cursor_purge_stores(slug, uuid):
     db = app_dir / "User" / "globalStorage" / "conversation-search.db"
     if db.is_file():
         try:
-            c = sqlite3.connect(db)
+            c = sqlite3.connect(db, timeout=15)
             rows = c.execute("select id, fts_rowid from conversations where id = ?", (uuid,)).fetchall()
             cand = c.execute("delete from conversation_search_candidates where id = ?", (uuid,)).rowcount
             if rows:
@@ -1268,7 +1277,7 @@ def _cursor_purge_stores(slug, uuid):
     db = app_dir / "User" / "globalStorage" / "state.vscdb"
     if db.is_file():
         try:
-            c = sqlite3.connect(db)
+            c = sqlite3.connect(db, timeout=15)
             n = c.execute("delete from ItemTable where key like ?", (f"%{uuid}%",)).rowcount
             try:
                 n += c.execute("delete from cursorDiskKV where key = ?",
@@ -1289,7 +1298,7 @@ def _cursor_purge_stores(slug, uuid):
     if ws_root.is_dir():
         for wdb in ws_root.glob("*/state.vscdb"):
             try:
-                c = sqlite3.connect(str(wdb))
+                c = sqlite3.connect(str(wdb), timeout=15)
                 row = c.execute(
                     "SELECT value FROM ItemTable WHERE key='composer.composerData'"
                 ).fetchone()
@@ -1318,7 +1327,7 @@ def _cursor_purge_stores(slug, uuid):
     db = cursor_dir / "ai-tracking" / "ai-code-tracking.db"
     if db.is_file():
         try:
-            c = sqlite3.connect(db)
+            c = sqlite3.connect(db, timeout=15)
             tables = [r[0] for r in c.execute("select name from sqlite_master where type='table'")]
             tot = 0
             for t in tables:
