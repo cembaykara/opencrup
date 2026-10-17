@@ -1152,17 +1152,58 @@ def _cursor_purge_stores(slug, uuid):
             removed.append("cloud sync")
             break
 
-    # 5. state.vscdb (UI / glass state)
+    # 5. state.vscdb (UI / glass state + composer store)
+    #    The real app lists from the workspace allComposers and loads from the
+    #    global cursorDiskKV (composer record + bubbles), so a purge must clear
+    #    those too or the conversation keeps showing in the real Cursor app.
     db = app_dir / "User" / "globalStorage" / "state.vscdb"
     if db.is_file():
         try:
             c = sqlite3.connect(db)
             n = c.execute("delete from ItemTable where key like ?", (f"%{uuid}%",)).rowcount
+            try:
+                n += c.execute("delete from cursorDiskKV where key = ?",
+                               (f"composerData:{uuid}",)).rowcount
+                n += c.execute("delete from cursorDiskKV where key like ?",
+                               (f"bubbleId:{uuid}:%",)).rowcount
+            except sqlite3.Error:
+                pass
             c.commit()
             if n:
                 removed.append("ui state")
         except sqlite3.Error:
             pass
+
+    # 5b. workspace allComposers (the sidebar lists from here) — scan every
+    #     workspace and drop this composerId from its composer.composerData.
+    ws_root = app_dir / "User" / "workspaceStorage"
+    if ws_root.is_dir():
+        for wdb in ws_root.glob("*/state.vscdb"):
+            try:
+                c = sqlite3.connect(str(wdb))
+                row = c.execute(
+                    "SELECT value FROM ItemTable WHERE key='composer.composerData'"
+                ).fetchone()
+                if not row:
+                    c.close()
+                    continue
+                data = json.loads(row[0])
+                composers = data.get("allComposers") or []
+                if not any(c0.get("composerId") == uuid for c0 in composers):
+                    c.close()
+                    continue
+                data["allComposers"] = [c0 for c0 in composers
+                                        if c0.get("composerId") != uuid]
+                for key in ("selectedComposerIds", "lastFocusedComposerIds"):
+                    if uuid in (data.get(key) or []):
+                        data[key] = [x for x in data[key] if x != uuid]
+                c.execute("UPDATE ItemTable SET value=? WHERE key='composer.composerData'",
+                          (json.dumps(data),))
+                c.commit()
+                c.close()
+                removed.append("workspace list")
+            except (sqlite3.Error, json.JSONDecodeError, OSError):
+                pass
 
     # 6. ai-tracking (telemetry)
     db = cursor_dir / "ai-tracking" / "ai-code-tracking.db"
