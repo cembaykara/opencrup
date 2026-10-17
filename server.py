@@ -997,6 +997,42 @@ def _cursor_slug_from_path(path):
     return p.lstrip("/").replace("/", "-").replace(".", "-").replace("%20", "-").replace(" ", "-")
 
 
+def cursor_diag():
+    """Report the resolved Cursor paths + store availability, for debugging
+    cross-platform moves/purges (e.g. a Windows user seeing chats but writes
+    not landing). Returns plain data, best-effort."""
+    app_dir = _cursor_appdata_dir()
+    gs = app_dir / "User" / "globalStorage"
+    state_db = gs / "state.vscdb"
+    search_db = gs / "conversation-search.db"
+    ws_root = app_dir / "User" / "workspaceStorage"
+    info = {
+        "platform": platform.system(),
+        "home": str(Path.home()),
+        "appdata_dir": str(app_dir),
+        "appdata_dir_exists": app_dir.is_dir(),
+        "projects_dir": str(cursor_projects_dir()),
+        "projects_dir_exists": cursor_projects_dir().is_dir(),
+        "state_vscdb": str(state_db),
+        "state_vscdb_exists": state_db.is_file(),
+        "search_db_exists": search_db.is_file(),
+        "workspace_root": str(ws_root),
+        "workspace_count": len(list(ws_root.glob("*/state.vscdb"))) if ws_root.is_dir() else 0,
+    }
+    # does the global state.vscdb have the tables the move/purge need?
+    if state_db.is_file():
+        try:
+            c = sqlite3.connect(str(state_db))
+            tables = {r[0] for r in c.execute(
+                "select name from sqlite_master where type='table'").fetchall()}
+            c.close()
+            info["state_tables"] = sorted(t for t in tables
+                                          if t in ("cursorDiskKV", "ItemTable"))
+        except sqlite3.Error as e:
+            info["state_error"] = str(e)
+    return info
+
+
 def cursor_projects():
     counts = {}
     for slug, _uuid, _path in _iter_cursor_transcripts():
@@ -1513,6 +1549,8 @@ class Handler(BaseHTTPRequestHandler):
                             "db": str(DB_PATH),
                             "version": detect_version(),
                         })
+                    if path == "/api/diag":
+                        return self._send_json(200, cursor_diag())
                     if path == "/api/projects":
                         return self._send_json(200, list_projects(conn))
                     if path == "/api/models":
