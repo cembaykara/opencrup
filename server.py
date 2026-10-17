@@ -475,22 +475,88 @@ def _cursor_root_fingerprint(cuuid, title, recency, is_archived, message_ids, br
     ).hexdigest()
 
 
-def _register_cursor_conversation(cuuid, title, body, headers, now_ms):
+def _cursor_workspace_db(directory):
+    """Find the workspace state.vscdb for a project directory.
+
+    Cursor keys each workspace by a hash; workspace.json holds the folder URI.
+    Returns the state.vscdb Path, or None if the project has no workspace yet
+    (in which case the conversation still lands in the global store).
+    """
+    ws_root = _cursor_appdata_dir() / "User" / "workspaceStorage"
+    if not ws_root.is_dir():
+        return None
+    target = str(Path(directory).expanduser().resolve())
+    for wj in ws_root.glob("*/workspace.json"):
+        try:
+            folder = json.loads(wj.read_text()).get("folder", "")
+        except (OSError, ValueError):
+            continue
+        # folder is a file:// URI like file:///Users/x/proj
+        path = folder[len("file://"):] if folder.startswith("file://") else folder
+        if path == target:
+            return wj.parent / "state.vscdb"
+    return None
+
+
+def _cursor_composer_defaults(cuuid, title, headers, now_ms):
+    """A full composer record matching the fields Cursor's deserializer expects.
+
+    Missing fields make `load()` reject the composer (it opens a blank chat
+    instead). Mirrors the shape of a real agent-mode composer.
+    """
+    return {
+        "_v": 3,
+        "composerId": cuuid,
+        "name": title,
+        "richText": title,
+        "text": title,
+        "fullConversationHeadersOnly": headers,
+        "conversationMap": {},
+        "status": "completed",
+        "createdAt": now_ms,
+        "lastUpdatedAt": now_ms,
+        "unifiedMode": "agent",
+        "forceMode": "agent",
+        "isAgentic": True,
+        "hasLoaded": True,
+        "allAttachedFileCodeChunksUris": [],
+        "capabilities": [],
+        "codeBlockData": {},
+        "codebaseSearchSettings": {},
+        "context": {},
+        "generatingBubbleIds": [],
+        "gitGraphFileSuggestions": [],
+        "hasChangedContext": False,
+        "isFileListExpanded": False,
+        "isReadingLongFile": False,
+        "latestChatGenerationUUID": None,
+        "latestConversationSummary": None,
+        "newlyCreatedFiles": [],
+        "newlyCreatedFolders": [],
+        "originalModelLines": [],
+        "subComposerIds": [],
+        "usageData": {},
+    }
+
+
+def _register_cursor_conversation(cuuid, title, body, headers, messages,
+                                  directory, now_ms):
     """Make a moved-in transcript show in the *real* Cursor app.
 
-    Two stores, both required:
-      1. The composer store (globalStorage/state.vscdb, table cursorDiskKV,
-         key `composerData:<uuid>`). Cursor's reconciliation reads this,
-         computes the root_fingerprint from the composer's headers, and
-         upserts the index row. Without it the row gets dropped on cleanup.
-      2. The search index (globalStorage/conversation-search.db). We write the
-         row ourselves (with the matching fingerprint) so it appears
-         immediately, before Cursor's next reconciliation.
+    Four stores, all required for the conversation to list AND load:
+      1. Composer store (globalStorage/state.vscdb, cursorDiskKV,
+         `composerData:<uuid>`) — full composer record; the reconciliation
+         reads it to compute the root_fingerprint.
+      2. Message bubbles (same table, `bubbleId:<uuid>:<bubbleId>`) — the
+         actual message bodies, one per header. Without these the composer
+         lists but opens blank.
+      3. Workspace allComposers (workspaceStorage/<hash>/state.vscdb,
+         ItemTable `composer.composerData`) — the sidebar lists from here.
+      4. Search index (conversation-search.db) — written with the matching
+         fingerprint for immediate visibility before the next reconcile.
 
-    `headers` is the list of {bubbleId, type} (type 1=user, 2=assistant), one
-    per transcript line — its bubbleIds become the fingerprint's messageIds.
-    Best-effort: a schema change in a future Cursor version should not break
-    the move.
+    `headers` is [{bubbleId, type}] (type 1=user, 2=assistant); `messages` is
+    the parallel list of message texts. Best-effort throughout.
     """
     gs = _cursor_appdata_dir() / "User" / "globalStorage"
     message_ids = [h["bubbleId"] for h in headers
@@ -498,34 +564,63 @@ def _register_cursor_conversation(cuuid, title, body, headers, now_ms):
                    and isinstance(h.get("bubbleId"), str)]
     fingerprint = _cursor_root_fingerprint(cuuid, title, now_ms, False, message_ids, "")
 
-    # 1) composer store — the source of truth the reconciliation reads
+    # 1) + 2) composer store + message bubbles (global cursorDiskKV)
     src = gs / "state.vscdb"
     if src.is_file():
         try:
             conn = sqlite3.connect(str(src))
-            composer = {
-                "_v": 3,
-                "composerId": cuuid,
-                "name": title,
-                "richText": title,
-                "text": title,
-                "fullConversationHeadersOnly": headers,
-                "conversationMap": {},
-                "status": "completed",
-                "createdAt": now_ms,
-                "lastUpdatedAt": now_ms,
-                "unifiedMode": "agent",
-                "isAgentic": True,
-            }
             conn.execute(
                 "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
-                (f"composerData:{cuuid}", json.dumps(composer)))
+                (f"composerData:{cuuid}",
+                 json.dumps(_cursor_composer_defaults(cuuid, title, headers, now_ms))))
+            for i, h in enumerate(headers):
+                if isinstance(h, dict) and h.get("type") in (1, 2):
+                    text = messages[i] if i < len(messages) else ""
+                    bubble = {"_v": 1, "type": h["type"], "text": text,
+                              "bubbleId": h["bubbleId"], "isAgentic": True,
+                              "unifiedMode": "agent"}
+                    conn.execute(
+                        "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
+                        (f"bubbleId:{cuuid}:{h['bubbleId']}", json.dumps(bubble)))
             conn.commit()
             conn.close()
         except sqlite3.Error:
             pass
 
-    # 2) search index — immediate visibility with the matching fingerprint
+    # 3) workspace allComposers — the sidebar lists from here
+    ws_db = _cursor_workspace_db(directory)
+    if ws_db is not None and ws_db.is_file():
+        try:
+            conn = sqlite3.connect(str(ws_db))
+            row = conn.execute(
+                "SELECT value FROM ItemTable WHERE key='composer.composerData'"
+            ).fetchone()
+            data = json.loads(row[0]) if row else {
+                "allComposers": [], "selectedComposerIds": [],
+                "lastFocusedComposerIds": [], "hasMigratedComposerData": True,
+                "hasMigratedMultipleComposers": True}
+            entry = {"type": "head", "composerId": cuuid, "name": title,
+                     "lastUpdatedAt": now_ms, "createdAt": now_ms,
+                     "unifiedMode": "agent", "forceMode": "agent",
+                     "hasUnreadMessages": False, "contextUsagePercent": 0,
+                     "totalLinesAdded": 0, "totalLinesRemoved": 0,
+                     "filesChangedCount": 0, "subtitle": "",
+                     "hasBlockingPendingActions": False, "isArchived": False,
+                     "isDraft": False, "isWorktree": False, "isSpec": False,
+                     "isBestOfNSubcomposer": False, "numSubComposers": 0,
+                     "referencedPlans": []}
+            if not any(c.get("composerId") == cuuid
+                       for c in data.get("allComposers", [])):
+                data.setdefault("allComposers", []).insert(0, entry)
+            conn.execute(
+                "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?,?)",
+                ("composer.composerData", json.dumps(data)))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+    # 4) search index — immediate visibility with the matching fingerprint
     db = gs / "conversation-search.db"
     if not db.is_file():
         return
@@ -610,11 +705,17 @@ def move_opencode_to_cursor(conn, sid, directory, delete_original=False):
     body = " ".join(c.get("text", "") for l in lines for c in l["message"]["content"]
                     if isinstance(c, dict) and c.get("type") == "text")
     # one composer header per transcript line (type 1=user, 2=assistant); the
-    # bubbleIds become the fingerprint's messageIds
-    headers = [{"bubbleId": str(uuid.uuid4()), "type": 1 if l["role"] == "user" else 2}
-               for l in lines]
-    _register_cursor_conversation(cuuid, title[:80], body, headers,
-                                  int(time.time() * 1000))
+    # bubbleIds become the fingerprint's messageIds, and each line's text is
+    # stored as a bubble so the conversation loads with content
+    headers = []
+    messages = []
+    for l in lines:
+        headers.append({"bubbleId": str(uuid.uuid4()),
+                        "type": 1 if l["role"] == "user" else 2})
+        messages.append(" ".join(c.get("text", "") for c in l["message"]["content"]
+                                 if isinstance(c, dict) and c.get("type") == "text"))
+    _register_cursor_conversation(cuuid, title[:80], body, headers, messages,
+                                  directory, int(time.time() * 1000))
     _CURSOR_CACHE.clear()
     if delete_original:
         conn.execute("DELETE FROM session_v2 WHERE id = ?", (sid,))  # messages cascade
