@@ -1,16 +1,24 @@
 # OpenCrup
 
-A local viewer and editor for [opencode](https://opencode.ai) and Cursor agent transcripts.
+Your agents talk a lot. OpenCrup lets you **read, edit, and move** those conversations — across **opencode** and **Cursor** — from one local dashboard. No install, no dependencies, just Python 3 stdlib doing the heavy lifting.
 
 ![OpenCrup home screen](docs/home.png)
 
-Pick a source and open a conversation. Only sources that exist on this machine are shown. A `+` lets you point at a Cursor install the scan missed.
+Pick a source, open a conversation. Only sources that actually exist on this machine show up; a `+` points it at a Cursor install the scan missed.
 
-## What it does
+## 🚚 Move conversations between opencode and Cursor
 
-Browse, search, and group conversations by project. Read markdown, collapsed thinking blocks, tool calls, and system events. Edit or delete individual messages. Select a range and delete, archive, or unarchive in bulk. Export a session as JSON.
+The headline act. Take a conversation that started in opencode and drop it into Cursor — or pull one back the other way. OpenCrup converts it to the target's native format **and** injects it into the target app's own stores, so it shows up in the real sidebar and loads with every reply, tool call, and thinking block intact. No re-typing, no copy-paste, no "where did my history go?".
 
-You can also move a conversation between opencode and Cursor. It is converted to the target format (SQLite or `.jsonl`) and opened in that view. Moving into Cursor writes the `.jsonl` transcript **and** injects the conversation into Cursor's own stores (composer record, message bubbles, workspace sidebar, search index) so it lists and loads in the real Cursor app immediately — not just after Cursor indexes the file. The real app renders each assistant reply from the bubble's text and tool-call data, so those are written per message (visible text, tool calls, and the render gate).
+- **opencode → Cursor** — writes the `.jsonl` transcript *and* the composer record, message bubbles, workspace sidebar entry, and search index. The real Cursor app lists it and renders the whole thing — visible text, tool calls, the render gate, all of it.
+- **Cursor → opencode** — imports it into opencode's SQLite store so it lives in the opencode view.
+- **Delete** — purge it from *every* store (transcript, encrypted reasoning, search index, cloud-sync copy, UI state, telemetry). No ghosts, no residue.
+
+Pick the destination from a dropdown of the target's existing projects. It even defaults to the conversation's own path, so the common case is one click.
+
+## What else it does
+
+Browse, search, and group conversations by project. Read markdown, collapsed thinking blocks, tool calls (input + output), and system events. Edit or delete individual messages. Select a range and delete, archive, or unarchive in bulk. Export a session as JSON.
 
 ## Run
 
@@ -47,7 +55,7 @@ python3 dev_mock.py -p 5000
 
 ## Deleting a Cursor conversation
 
-A Cursor conversation is stored in more than the transcript file. Deleting one from OpenCrup removes it from all of these:
+A Cursor conversation lives in more than the transcript file. Deleting one from OpenCrup removes it from all of these:
 
 | Store | Path |
 |---|---|
@@ -58,7 +66,7 @@ A Cursor conversation is stored in more than the transcript file. Deleting one f
 | UI state | `state.vscdb` |
 | Telemetry | `ai-tracking/ai-code-tracking.db` |
 
-If Cursor still has a copy on its servers, a later sync can bring the conversation back. That copy is outside this app.
+If Cursor still has a copy on its servers, a later sync can bring it back. That copy is outside this app.
 
 The same purge is available from the command line:
 
@@ -70,7 +78,7 @@ python3 purge_cursor.py <uuid-or-prefix> [--dry-run]
 
 | File | Role |
 |---|---|
-| `server.py` | HTTP server, opencode database, Cursor transcript parsing, purge |
+| `server.py` | HTTP server, opencode database, Cursor transcript parsing, move + purge |
 | `public/index.html` | Frontend |
 | `purge_cursor.py` | Standalone purge CLI |
 | `dev_mock.py` | Mock opencode data for local development |
