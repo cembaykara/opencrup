@@ -543,8 +543,21 @@ def _cursor_composer_defaults(cuuid, title, headers, now_ms):
     }
 
 
-def _register_cursor_conversation(cuuid, title, body, headers, messages,
-                                  directory, now_ms):
+def _cursor_tool_case(name):
+    """Map a tool name to Cursor's (toolCallCase, toolFormerTool) pair."""
+    n = (name or "").lower()
+    if "read" in n:
+        return "readToolCall", 40
+    if "write" in n or "edit" in n:
+        return "writeToolCall", 41
+    if "bash" in n or "shell" in n or "command" in n:
+        return "bashToolCall", 42
+    if "search" in n or "grep" in n or "glob" in n:
+        return "searchToolCall", 43
+    return "genericToolCall", 40
+
+
+def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
     """Make a moved-in transcript show in the *real* Cursor app.
 
     Four stores, all required for the conversation to list AND load:
@@ -559,13 +572,75 @@ def _register_cursor_conversation(cuuid, title, body, headers, messages,
       4. Search index (conversation-search.db) — written with the matching
          fingerprint for immediate visibility before the next reconcile.
 
-    `headers` is [{bubbleId, type}] (type 1=user, 2=assistant); `messages` is
-    the parallel list of message texts. Best-effort throughout.
+    `lines` is the transcript (each line has `role` and `message.content`).
+    The real app renders assistant content from the bubble's `text` (visible
+    text) and `toolFormerData` (tool use), and gates rendering on the header's
+    `grouping.isRenderable`. Best-effort throughout.
     """
     gs = _cursor_appdata_dir() / "User" / "globalStorage"
-    message_ids = [h["bubbleId"] for h in headers
-                   if isinstance(h, dict) and h.get("type") in (1, 2)
-                   and isinstance(h.get("bubbleId"), str)]
+
+    # Build headers + bubbles from the transcript. The real app renders
+    # assistant content from the bubble's `text` (visible text) and
+    # `toolFormerData` (tool use), and gates rendering on the header's
+    # `grouping.isRenderable` — a tool-use reply with no `grouping` renders
+    # blank, so both must be populated.
+    headers = []
+    bubbles = []  # (bubbleId, bubble_dict)
+    for l in lines:
+        role = l.get("role")
+        content = (l.get("message") or {}).get("content") or []
+        bubble_id = str(uuid.uuid4())
+        btype = 1 if role == "user" else 2
+        texts = [c.get("text", "") for c in content
+                 if isinstance(c, dict) and c.get("type") == "text"]
+        tools = [c for c in content
+                 if isinstance(c, dict) and c.get("type") == "tool_use"]
+        text = "\n".join(t for t in texts if t).strip()
+        bubble = {"_v": 1, "type": btype, "text": text, "bubbleId": bubble_id,
+                  "isAgentic": True, "unifiedMode": "agent"}
+        grouping = {"isRenderable": True, "toolDisplayComputed": True}
+        if text:
+            grouping["hasText"] = True
+        if btype == 2 and tools:
+            t0 = tools[0]
+            tool_call_id = f"call-{uuid.uuid4()}"
+            name = t0.get("name", "tool")
+            case, tool = _cursor_tool_case(name)
+            raw_args = t0.get("input")
+            raw_args_s = (raw_args if isinstance(raw_args, str)
+                          else json.dumps(raw_args))
+            path = ""
+            if isinstance(raw_args, dict):
+                path = (raw_args.get("path") or raw_args.get("targetFile")
+                        or raw_args.get("file_path") or "")
+            bubble["toolFormerData"] = {
+                "toolCallId": tool_call_id,
+                "toolIndex": 0,
+                "modelCallId": tool_call_id,
+                "status": "completed",
+                "name": name,
+                "rawArgs": raw_args_s,
+                "tool": tool,
+                "params": raw_args_s,
+                "result": "{}",
+            }
+            bubble["unifiedMode"] = 2
+            bubble["capabilityType"] = 15
+            grouping.update({
+                "capabilityType": 15,
+                "toolFormerTool": tool,
+                "toolFormerStatus": "completed",
+                "toolCallId": tool_call_id,
+                "isToolGroupable": True,
+                "toolCallCase": case,
+                "toolDisplayComputed": True,
+            })
+            if path:
+                grouping["toolDisplayPath"] = path
+        headers.append({"bubbleId": bubble_id, "type": btype, "grouping": grouping})
+        bubbles.append((bubble_id, bubble))
+
+    message_ids = [h["bubbleId"] for h in headers]
     fingerprint = _cursor_root_fingerprint(cuuid, title, now_ms, False, message_ids, "")
 
     # 1) + 2) composer store + message bubbles (global cursorDiskKV)
@@ -577,15 +652,10 @@ def _register_cursor_conversation(cuuid, title, body, headers, messages,
                 "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
                 (f"composerData:{cuuid}",
                  json.dumps(_cursor_composer_defaults(cuuid, title, headers, now_ms))))
-            for i, h in enumerate(headers):
-                if isinstance(h, dict) and h.get("type") in (1, 2):
-                    text = messages[i] if i < len(messages) else ""
-                    bubble = {"_v": 1, "type": h["type"], "text": text,
-                              "bubbleId": h["bubbleId"], "isAgentic": True,
-                              "unifiedMode": "agent"}
-                    conn.execute(
-                        "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
-                        (f"bubbleId:{cuuid}:{h['bubbleId']}", json.dumps(bubble)))
+            for bubble_id, bubble in bubbles:
+                conn.execute(
+                    "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
+                    (f"bubbleId:{cuuid}:{bubble_id}", json.dumps(bubble)))
             conn.commit()
             conn.close()
         except sqlite3.Error:
@@ -708,17 +778,11 @@ def move_opencode_to_cursor(conn, sid, directory, delete_original=False):
             break
     body = " ".join(c.get("text", "") for l in lines for c in l["message"]["content"]
                     if isinstance(c, dict) and c.get("type") == "text")
-    # one composer header per transcript line (type 1=user, 2=assistant); the
-    # bubbleIds become the fingerprint's messageIds, and each line's text is
-    # stored as a bubble so the conversation loads with content
-    headers = []
-    messages = []
-    for l in lines:
-        headers.append({"bubbleId": str(uuid.uuid4()),
-                        "type": 1 if l["role"] == "user" else 2})
-        messages.append(" ".join(c.get("text", "") for c in l["message"]["content"]
-                                 if isinstance(c, dict) and c.get("type") == "text"))
-    _register_cursor_conversation(cuuid, title[:80], body, headers, messages,
+    # the transcript lines drive the composer headers + bubbles; the real app
+    # renders assistant content from each bubble's `text`/`toolFormerData` and
+    # gates it on the header's `grouping.isRenderable` (see
+    # _register_cursor_conversation)
+    _register_cursor_conversation(cuuid, title[:80], body, lines,
                                   directory, int(time.time() * 1000))
     _CURSOR_CACHE.clear()
     if delete_original:
