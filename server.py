@@ -479,6 +479,24 @@ def _cursor_root_fingerprint(cuuid, title, recency, is_archived, message_ids, br
     ).hexdigest()
 
 
+def _decode_folder_uri(folder):
+    """Decode a workspace.json `folder` URI to a Path.
+
+    Handles the Windows form `file:///c%3A/Users/x/proj` (percent-encoded drive
+    letter): after unquoting it is `/c:/Users/x/proj`, and Windows' Path would
+    misread the leading `/c:` as a UNC path (`\\c:\\...`). Strip the leading
+    slash before a drive letter so it resolves to `c:\\Users\\x\\proj`."""
+    if not folder:
+        return None
+    path = unquote(urlparse(folder).path) if folder.startswith("file://") else folder
+    if not path:
+        return None
+    if platform.system() == "Windows" and len(path) >= 3 \
+            and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return Path(path)
+
+
 def _cursor_workspace_db(directory):
     """Find the workspace state.vscdb for a project directory.
 
@@ -491,7 +509,7 @@ def _cursor_workspace_db(directory):
         return None
     target = Path(directory).expanduser().resolve()
     # Windows paths are case-insensitive and the folder URI is a file:// URL
-    # (file:///C:/Users/x/proj), so compare decoded, resolved forms
+    # (file:///c%3A/Users/x/proj), so compare decoded, resolved forms
     # case-insensitively there; elsewhere a plain resolved comparison works.
     win = platform.system() == "Windows"
     norm = (lambda p: str(p).lower()) if win else (lambda p: str(p))
@@ -501,11 +519,9 @@ def _cursor_workspace_db(directory):
             folder = json.loads(wj.read_text()).get("folder", "")
         except (OSError, ValueError):
             continue
-        if not folder:
+        cand = _decode_folder_uri(folder)
+        if cand is None:
             continue
-        # decode a file:// URI (file:///C:/Users/x/proj or file:///Users/x/proj)
-        path = unquote(urlparse(folder).path) if folder.startswith("file://") else folder
-        cand = Path(path)
         if norm(cand) == target_n or norm(cand.resolve()) == target_n:
             return wj.parent / "state.vscdb"
     return None
@@ -1061,8 +1077,7 @@ def cursor_workspace_diag(directory):
                 folder = json.loads(wj.read_text()).get("folder", "")
             except (OSError, ValueError):
                 folder = ""
-            path = unquote(urlparse(folder).path) if folder.startswith("file://") else folder
-            cand = Path(path) if path else None
+            cand = _decode_folder_uri(folder)
             entries.append({
                 "workspace": wj.parent.name,
                 "folder": folder,
