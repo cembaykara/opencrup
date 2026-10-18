@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { $, detailEl, api, toast } from "./util.js";
+import { $, detailEl, api, toast, selectPromptHtml } from "./util.js";
 import { refreshAll } from "./data.js";
 
 // ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ export async function showViewer(source, account) {
   $("#viewer").classList.remove("hidden");
   $("#app-logo").innerHTML = 'Open<span>Crup</span>';
   $("#f-search").value = "";
-  detailEl.innerHTML = '<div class="empty"><div class="big">💬</div><div>Select a conversation to view it</div></div>';
+  detailEl.innerHTML = selectPromptHtml();
   try {
     if (source === "cursor") {
       const env = await api("/api/cursor/env");

@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { $, detailEl, escapeHtml, relTime, shortModel, tilde, toast, api, base } from "./util.js";
+import { $, detailEl, escapeHtml, relTime, shortModel, tilde, toast, api, base, selectPromptHtml } from "./util.js";
 import { loadSessions } from "./data.js";
 import { selectSession } from "./detail.js";
 
@@ -88,6 +88,7 @@ function sessionItemHtml(s) {
           <span>${s.message_count} msg</span>
           ${s.agent ? `<span class="badge agent">${escapeHtml(s.agent)}</span>` : ""}
           ${model ? `<span class="badge model">${escapeHtml(model)}</span>` : ""}
+          ${s.content_state === "orphaned" ? `<span class="badge orphan" data-tip="Header only — content is cloud-only or evicted by Cursor">no local content</span>` : ""}
           ${s.time_archived ? `<span class="badge archived">archived</span>` : ""}
         </div>
       </div>
@@ -169,7 +170,7 @@ export async function bulkAction(action) {
     if (state.selectedId && state.selected.has(state.selectedId)) {
       state.detail = null;
       state.selectedId = null;
-      detailEl.innerHTML = '<div class="empty"><div class="big">💬</div><div>Select a conversation to view it</div></div>';
+      detailEl.innerHTML = selectPromptHtml();
     }
     state.selected.clear();
     state.selectAnchor = null;

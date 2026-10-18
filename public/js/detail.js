@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { $, detailEl, escapeHtml, md, fmtTime, shortModel, tilde, toast, api, base, messageUrl } from "./util.js";
+import { $, detailEl, escapeHtml, md, fmtTime, shortModel, tilde, toast, api, base, messageUrl, selectPromptHtml, loadingHtml, errorHtml } from "./util.js";
 import { renderSessionList } from "./list.js";
 import { loadSessions } from "./data.js";
 import { showViewer } from "./nav.js";
@@ -11,12 +11,12 @@ export async function selectSession(id) {
   state.selectedId = id;
   state.selectAnchor = id; // the opened row is the "latest selected" (shift-click anchor)
   renderSessionList();
-  detailEl.innerHTML = '<div class="empty"><div class="big">⏳</div><div>Loading…</div></div>';
+  detailEl.innerHTML = loadingHtml();
   try {
     state.detail = await api(`${base()}/sessions/${encodeURIComponent(id)}`);
     renderDetail();
   } catch (err) {
-    detailEl.innerHTML = `<div class="empty"><div class="big">⚠️</div><div>${escapeHtml(err.message)}</div></div>`;
+    detailEl.innerHTML = errorHtml(err.message);
   }
 }
 
@@ -396,7 +396,7 @@ export async function deleteSession() {
     toast(stores ? `deleted: ${stores}` : "session deleted");
     state.detail = null;
     state.selectedId = null;
-    detailEl.innerHTML = '<div class="empty"><div class="big">💬</div><div>Select a conversation to view it</div></div>';
+    detailEl.innerHTML = selectPromptHtml();
     await loadSessions();
   } catch (err) { toast(err.message, "error"); }
 }

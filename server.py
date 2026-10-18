@@ -1720,8 +1720,10 @@ def _cursor_header_chats(include_archived=False):
     # each referenced blob (counts user/assistant messages without pulling
     # the full blob values)
     refs_by_chat = {}
+    have_composer = set()
     ref_keys = []
     for key, value in comp_rows:
+        have_composer.add(key[len("composerData:"):])
         try:
             cs = json.loads(value).get("conversationState")
         except (ValueError, TypeError):
@@ -1772,6 +1774,12 @@ def _cursor_header_chats(include_archived=False):
                 and not is_empty
                 or (role == "user" and is_list))
             (*heads.get(f"agentKv:blob:{r}", (None, False, False))))
+        if cuuid not in have_composer:
+            content_state = "orphaned"  # header only: content cloud-only or evicted
+        elif not refs:
+            content_state = "empty"  # composer exists, no messages yet
+        else:
+            content_state = "full"
         out.append({
             "id": f"{ws_id}::{cuuid}",
             "title": head.get("name") or head.get("subtitle") or "Untitled conversation",
@@ -1784,6 +1792,7 @@ def _cursor_header_chats(include_archived=False):
             "model": None,
             "message_count": count,
             "local": False,
+            "content_state": content_state,
         })
     return out
 
