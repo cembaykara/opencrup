@@ -174,6 +174,29 @@ def list_projects(conn):
 # ---------------------------------------------------------------------------
 # API: sessions
 # ---------------------------------------------------------------------------
+def _messages_search_text(msgs):
+    """Lowercased full text of unified messages: user text, assistant
+    text/reasoning, tool names + inputs. Used for full-text search."""
+    parts = []
+    for m in msgs:
+        d = m.get("data") or {}
+        if m.get("type") == "user":
+            parts.append(d.get("text") or "")
+        else:
+            for c in d.get("content") or []:
+                if not isinstance(c, dict):
+                    continue
+                t = c.get("type")
+                if t in ("text", "reasoning"):
+                    parts.append(c.get("text") or "")
+                elif t == "tool":
+                    parts.append(c.get("name") or "")
+                    inp = (c.get("state") or {}).get("input")
+                    if inp:
+                        parts.append(inp if isinstance(inp, str) else json.dumps(inp))
+    return " ".join(parts).lower()
+
+
 def list_sessions(conn, project_id=None, q=None, include_archived=False, limit="200"):
     where = ["1=1"]
     params = []
@@ -183,9 +206,12 @@ def list_sessions(conn, project_id=None, q=None, include_archived=False, limit="
     if not include_archived:
         where.append("s.time_archived IS NULL")
     if q:
-        where.append("(s.title LIKE ? OR s.id LIKE ? OR s.directory LIKE ? OR s.slug LIKE ?)")
+        # full text: title/id/directory/slug OR any message's content
+        where.append("(s.title LIKE ? OR s.id LIKE ? OR s.directory LIKE ? OR s.slug LIKE ?"
+                     " OR EXISTS (SELECT 1 FROM session_message m"
+                     " WHERE m.session_id = s.id AND m.data LIKE ?))")
         like = f"%{q}%"
-        params.extend([like, like, like, like])
+        params.extend([like, like, like, like, like])
     try:
         params.append(int(limit))
     except (TypeError, ValueError):
@@ -1843,7 +1869,7 @@ def cursor_sessions(project=None, q=None, include_archived=False, limit="200"):
         mtime = int(path.stat().st_mtime * 1000)
         title = _cursor_title(path, uuid)
         msgs = _parse_cursor_transcript(path)
-        rows.append({
+        row = {
             "id": f"{slug}::{uuid}",
             "title": title,
             "directory": _cursor_real_path(slug),
@@ -1855,18 +1881,27 @@ def cursor_sessions(project=None, q=None, include_archived=False, limit="200"):
             "model": None,
             "message_count": len(msgs),
             "local": True,
-        })
+        }
+        if q:
+            row["_search"] = _messages_search_text(msgs)
+        rows.append(row)
     # chats the app lists from composerHeaders without a local transcript
     for chat in _cursor_header_chats(include_archived=include_archived):
         if project and chat["project"] != project:
             continue
+        if q:
+            chat["_search"] = _messages_search_text(
+                _cursor_blob_messages(chat["id"].split("::", 1)[1]))
         rows.append(chat)
     if q:
-        like = f"%{q}%"
+        like = q.lower()
         rows = [r for r in rows
-                if like.replace("%", "").lower() in r["title"].lower()
-                or like.replace("%", "").lower() in r["directory"].lower()
-                or like.replace("%", "").lower() in r["id"].lower()]
+                if like in r["title"].lower()
+                or like in r["directory"].lower()
+                or like in r["id"].lower()
+                or like in r.get("_search", "")]
+        for r in rows:
+            r.pop("_search", None)
     rows.sort(key=lambda r: r["time_updated"], reverse=True)
     return rows[:limit]
 
@@ -2123,7 +2158,7 @@ def claude_sessions(project=None, q=None, include_archived=False, limit="200"):
         if not include_archived and archived_ts:
             continue
         msgs = _parse_claude_transcript(path)
-        rows.append({
+        row = {
             "id": f"{slug}::{uuid}",
             "title": _claude_title(path),
             "directory": _claude_real_path(slug, path),
@@ -2135,13 +2170,19 @@ def claude_sessions(project=None, q=None, include_archived=False, limit="200"):
             "model": None,
             "message_count": len(msgs),
             "local": True,
-        })
+        }
+        if q:
+            row["_search"] = _messages_search_text(msgs)
+        rows.append(row)
     if q:
         like = q.lower()
         rows = [r for r in rows
                 if like in r["title"].lower()
                 or like in r["directory"].lower()
-                or like in r["id"].lower()]
+                or like in r["id"].lower()
+                or like in r.get("_search", "")]
+        for r in rows:
+            r.pop("_search", None)
     rows.sort(key=lambda r: r["time_updated"], reverse=True)
     return rows[:limit]
 
