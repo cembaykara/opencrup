@@ -6,6 +6,7 @@ import { refreshAll } from "./data.js";
 // navigation: home <-> viewer
 // ---------------------------------------------------------------------------
 export function resetViewerState() {
+  state.account = "default";
   state.selected.clear();
   state.selectAnchor = null;
   state.selectedId = null;
@@ -21,9 +22,10 @@ export function showHome() {
   $("#home").classList.remove("hidden");
 }
 
-export async function showViewer(source) {
+export async function showViewer(source, account) {
   state.source = source;
   resetViewerState();
+  state.account = (source === "claude" && account) ? account : "default";
   $("#home").classList.add("hidden");
   $("#viewer").classList.remove("hidden");
   $("#app-logo").innerHTML = 'Open<span>Crup</span>';
@@ -74,6 +76,16 @@ function sourceCardHtml(source, info) {
   </div>`;
 }
 
+function claudeAccountCardHtml(acc) {
+  const m = SOURCE_META.claude;
+  return `<div class="source-card" data-source="claude" data-account="${acc.id}">
+    <div class="icon">${m.icon}</div>
+    <div class="name">${acc.label}</div>
+    <div class="desc">${m.desc}</div>
+    <div class="count">${acc.count} sessions</div>
+  </div>`;
+}
+
 function addCardHtml() {
   return `<div class="source-card add" id="card-add">
     <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></div>
@@ -90,11 +102,19 @@ export async function renderHome() {
   const cards = [];
   if (sources.opencode && sources.opencode.found) cards.push(sourceCardHtml("opencode", sources.opencode));
   if (sources.cursor && sources.cursor.found) cards.push(sourceCardHtml("cursor", sources.cursor));
-  if (sources.claude && sources.claude.found) cards.push(sourceCardHtml("claude", sources.claude));
-  cards.push(addCardHtml()); // always present; max 3 cards total
+  // claude: one card per account (default + any the user added)
+  const claudeAccounts = (sources.claude_accounts && sources.claude_accounts.length)
+    ? sources.claude_accounts
+    : (sources.claude && sources.claude.found
+        ? [{ id: "default", label: "Claude Code", path: sources.claude.path, found: true, count: sources.claude.count }]
+        : []);
+  for (const acc of claudeAccounts) {
+    if (acc.found) cards.push(claudeAccountCardHtml(acc));
+  }
+  cards.push(addCardHtml()); // always present
   el.innerHTML = cards.join("");
   el.querySelectorAll(".source-card[data-source]").forEach((c) =>
-    c.addEventListener("click", () => showViewer(c.dataset.source)));
+    c.addEventListener("click", () => showViewer(c.dataset.source, c.dataset.account)));
   const add = el.querySelector("#card-add");
   if (add) add.addEventListener("click", addSource);
 }

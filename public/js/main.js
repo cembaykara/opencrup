@@ -66,7 +66,7 @@ $("main").addEventListener("click", (e) => {
   const params = new URLSearchParams(location.search);
   const src = params.get("source");
   if (src && ["opencode", "cursor", "claude"].includes(src)) {
-    await showViewer(src);
+    await showViewer(src, params.get("account"));
     const sid = params.get("session");
     if (sid) selectSession(sid);
   }

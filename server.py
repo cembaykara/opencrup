@@ -23,6 +23,7 @@ import shutil
 import sqlite3
 import string
 import subprocess
+import threading
 import time
 import uuid
 from contextlib import closing
@@ -355,14 +356,22 @@ def detect_sources():
     agent = Path.home() / ".cursor"
     cur_found = agent.is_dir() or _cursor_appdata_dir().is_dir()
     cur_count = sum(1 for _ in _iter_cursor_transcripts()) if cur_found else 0
-    # claude code (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects)
-    claude_dir = _claude_projects_dir()
-    claude_found = claude_dir.is_dir()
-    claude_count = sum(1 for _ in _iter_claude_transcripts()) if claude_found else 0
+    # claude code: one account per CLAUDE_CONFIG_DIR (default + any user-added)
+    claude_accounts = []
+    for aid, cdir in _claude_accounts():
+        pdir = cdir / "projects"
+        found = pdir.is_dir()
+        count = sum(1 for _ in _iter_claude_transcripts_at(pdir)) if found else 0
+        claude_accounts.append({
+            "id": aid, "label": _claude_account_label(aid, cdir),
+            "path": str(cdir), "found": found, "count": count,
+        })
+    default = claude_accounts[0]
     return {
         "opencode": {"found": oc_found, "path": str(oc_path), "count": oc_count},
         "cursor": {"found": cur_found, "path": str(cursor_projects_dir()), "count": cur_count},
-        "claude": {"found": claude_found, "path": str(claude_dir), "count": claude_count},
+        "claude": {"found": default["found"], "path": default["path"], "count": default["count"]},
+        "claude_accounts": claude_accounts,
     }
 
 
@@ -385,14 +394,18 @@ def add_source(app, path):
         _save_config(cfg)
         _CURSOR_CACHE.clear()
     elif app == "claude":
-        cand = p / "projects"
         has_cc = lambda d: d.is_dir() and any(
             c.is_dir() and any(f.suffix == ".jsonl" for f in c.iterdir()) for c in d.iterdir())
-        if not has_cc(cand):
-            cand = p
-        if not has_cc(cand):
+        # path is a config dir (has projects/) or a projects dir directly
+        config_dir = p if has_cc(p / "projects") else (p.parent if has_cc(p) else None)
+        if not config_dir:
             raise HttpError(400, "no Claude Code data found at that path")
-        cfg["claude_projects"] = str(cand)
+        accounts = cfg.get("claude_accounts", [])
+        known = {str(Path(e).expanduser().resolve()) for e in accounts}
+        known.add(str(_claude_default_config_dir().resolve()))
+        if str(config_dir.expanduser().resolve()) not in known:
+            accounts.append(str(config_dir))
+        cfg["claude_accounts"] = accounts
         _save_config(cfg)
         _CLAUDE_CACHE.clear(); _CLAUDE_CWD.clear()
     elif app == "opencode":
@@ -1654,30 +1667,81 @@ _CLAUDE_CACHE = {}   # (path, mtime) -> parsed messages
 _CLAUDE_CWD = {}     # slug -> real project path (cwd)
 
 
-def _claude_projects_dir():
-    """Claude Code projects dir: saved override > $CLAUDE_CONFIG_DIR/projects > ~/.claude/projects."""
-    cfg = _load_config()
-    if cfg.get("claude_projects"):
-        return Path(cfg["claude_projects"])
+# Per-request Claude account (set by the HTTP handler). Claude Code supports
+# multiple accounts, one per CLAUDE_CONFIG_DIR; each holds its own projects/.
+_CLAUDE_TLS = threading.local()
+
+
+def _claude_default_config_dir():
     env = os.environ.get("CLAUDE_CONFIG_DIR")
-    base = Path(env).expanduser() if env else Path.home() / ".claude"
-    return base / "projects"
+    return Path(env).expanduser() if env else Path.home() / ".claude"
+
+
+def _claude_account_id(config_dir):
+    """Stable id for a Claude config dir: 'default' for the default, else a slug."""
+    try:
+        if Path(config_dir).expanduser().resolve() == _claude_default_config_dir().resolve():
+            return "default"
+    except Exception:
+        pass
+    return Path(config_dir).name.lstrip(".") or "claude"
+
+
+def _claude_accounts():
+    """All Claude accounts as (id, config_dir): the default first, then any the
+    user added (each a CLAUDE_CONFIG_DIR holding a projects/ tree)."""
+    cfg = _load_config()
+    default_dir = _claude_default_config_dir()
+    if cfg.get("claude_projects"):  # legacy single override is a projects dir
+        default_dir = Path(cfg["claude_projects"]).expanduser().parent
+    accounts = [("default", default_dir)]
+    seen = {str(default_dir)}
+    for entry in cfg.get("claude_accounts", []):
+        p = Path(entry if isinstance(entry, str) else entry.get("path", "")).expanduser()
+        if not p or str(p) in seen:
+            continue
+        aid = (entry.get("id") if isinstance(entry, dict) else None) or _claude_account_id(p)
+        accounts.append((aid, p))
+        seen.add(str(p))
+    return accounts
+
+
+def _claude_account_label(aid, cdir):
+    if aid == "default":
+        return "Claude Code"
+    name = Path(cdir).name.lstrip(".")
+    return f"Claude Code ({name})" if name else "Claude Code"
+
+
+def _claude_projects_dir(account=None):
+    """Projects dir for a Claude account (<config_dir>/projects).
+
+    account=None reads the per-request account set by the HTTP handler."""
+    if account is None:
+        account = getattr(_CLAUDE_TLS, "account", "default")
+    for aid, cdir in _claude_accounts():
+        if aid == account:
+            return cdir / "projects"
+    return _claude_accounts()[0][1] / "projects"
 
 
 def _claude_transcript_path(slug, uuid):
     return _claude_projects_dir() / slug / f"{uuid}.jsonl"
 
 
-def _iter_claude_transcripts():
-    d = _claude_projects_dir()
-    if not d.is_dir():
+def _iter_claude_transcripts_at(pdir):
+    if not pdir.is_dir():
         return
-    for proj in sorted(d.iterdir()):
+    for proj in sorted(pdir.iterdir()):
         if not proj.is_dir():
             continue
         for f in proj.iterdir():
             if f.is_file() and f.suffix == ".jsonl":
                 yield proj.name, f.stem, f
+
+
+def _iter_claude_transcripts():
+    yield from _iter_claude_transcripts_at(_claude_projects_dir())
 
 
 def _claude_real_path(slug, path=None):
@@ -2666,6 +2730,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send_json(405, {"error": "method not allowed"})
 
     def _handle_claude(self, method, path, qs):
+        _CLAUDE_TLS.account = qs.get("account", ["default"])[0]
         if method == "GET":
             if path == "/api/claude/env":
                 return self._send_json(200, {

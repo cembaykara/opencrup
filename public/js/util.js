@@ -65,6 +65,10 @@ export function toast(msg, type = "ok") {
 }
 
 export async function api(path, opts = {}) {
+  // Claude supports multiple accounts; thread the active one through as ?account=
+  if (state.source === "claude" && state.account && state.account !== "default") {
+    path += (path.includes("?") ? "&" : "?") + "account=" + encodeURIComponent(state.account);
+  }
   const res = await fetch(path, {
     headers: { "content-type": "application/json" },
     ...opts,

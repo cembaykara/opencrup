@@ -1,6 +1,7 @@
 // Shared app state — one object, imported by every module.
 export const state = {
-  source: null, // "opencode" | "cursor" | null (home)
+  source: null, // "opencode" | "cursor" | "claude" | null (home)
+  account: "default", // claude account id (a CLAUDE_CONFIG_DIR); "default" = ~/.claude
   sessions: [],
   projects: [],
   models: [],
