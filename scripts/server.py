@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent  # repo root (server.py lives in scripts/)
 PUBLIC_DIR = BASE_DIR / "public"
 DB_PATH = Path(
     os.environ.get("OPENCODE_DB")

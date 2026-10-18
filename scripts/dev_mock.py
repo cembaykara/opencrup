@@ -18,7 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent.parent  # repo root (server.py lives there)
+BASE = Path(__file__).resolve().parent  # scripts/ (server.py lives here)
 PORT = 4322
 for i, a in enumerate(sys.argv):
     if a == "-p" and i + 1 < len(sys.argv):

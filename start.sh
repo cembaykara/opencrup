@@ -49,4 +49,4 @@ export PORT HOST
 [ -n "$DB" ] && export OPENCODE_DB="$DB"
 
 echo "OpenCrup → http://localhost:$PORT"
-exec python server.py
+exec python scripts/server.py

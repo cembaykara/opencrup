@@ -51,7 +51,7 @@ The destination is a dropdown of the target's existing projects, defaulting to t
 ./start.sh -p 8080    # custom port
 ```
 
-Or `python3 server.py`.
+Or `python3 scripts/server.py`.
 
 | Variable | Default | Meaning |
 |---|---|---|
