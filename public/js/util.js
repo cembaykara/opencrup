@@ -66,6 +66,7 @@ export function emptyHtml(big, text) {
 export const selectPromptHtml = () => emptyHtml(ICON_CHAT, "Select a conversation to view it");
 export const loadingHtml = () => emptyHtml('<span class="spinner"></span>', "Loading…");
 export const errorHtml = (msg) => emptyHtml(ICON_WARN, escapeHtml(msg));
+export const listLoadingHtml = () => '<div class="list-loading"><span class="spinner"></span></div>';
 
 export function toast(msg, type = "ok") {
   const el = $("#toast");

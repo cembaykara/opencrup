@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { $, api, base, tilde, escapeHtml, sessionsUrl } from "./util.js";
+import { $, api, base, tilde, escapeHtml, sessionsUrl, listLoadingHtml } from "./util.js";
 import { renderSessionList } from "./list.js";
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,20 @@ export async function loadSessions() {
   const q = $("#f-search").value.trim();
   const project = state.projectFilter;
   const archived = state.showArchived;
-  state.sessions = await api(sessionsUrl({ q, project, archived }));
+  // slow sources (e.g. cursor) leave the list blank while fetching — show a
+  // spinner whenever the list is empty so it's clear a load is in progress
+  const listEl = $("#session-list");
+  const showSpinner = listEl && !listEl.firstElementChild;
+  if (showSpinner) listEl.innerHTML = listLoadingHtml();
+  let sessions;
+  try {
+    sessions = await api(sessionsUrl({ q, project, archived }));
+  } catch (err) {
+    // don't leave a spinner behind on failure (it may have been set by showViewer)
+    if (listEl.querySelector(".list-loading")) listEl.innerHTML = "";
+    throw err;
+  }
+  state.sessions = sessions;
   // drop selections (and the range anchor) that are no longer in the visible list
   const visible = new Set(state.sessions.map((s) => s.id));
   for (const id of [...state.selected]) if (!visible.has(id)) state.selected.delete(id);

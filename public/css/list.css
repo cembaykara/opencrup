@@ -9,6 +9,13 @@
   left: auto; right: 0; transform: none;
 }
 
+/* spinner shown in the list while sessions are loading (slow sources) */
+.list-loading {
+  display: flex; align-items: center; justify-content: center;
+  padding: 48px 0;
+}
+.list-loading .spinner { width: 22px; height: 22px; border-width: 3px; }
+
 .session-item {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);

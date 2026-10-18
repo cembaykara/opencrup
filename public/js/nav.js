@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { $, detailEl, api, toast, selectPromptHtml, saveView, clearView } from "./util.js";
+import { $, detailEl, api, toast, selectPromptHtml, saveView, clearView, listLoadingHtml } from "./util.js";
 import { refreshAll } from "./data.js";
 
 // ---------------------------------------------------------------------------
@@ -32,6 +32,9 @@ export async function showViewer(source, account) {
   $("#viewer").classList.remove("hidden");
   $("#app-logo").innerHTML = 'Open<span>Crup</span>';
   $("#f-search").value = "";
+  // clear the previous source's list immediately — a slow load (e.g. cursor)
+  // must not masquerade as the old source's sessions
+  $("#session-list").innerHTML = listLoadingHtml();
   detailEl.innerHTML = selectPromptHtml();
   try {
     if (source === "cursor") {
