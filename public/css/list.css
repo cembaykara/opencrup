@@ -1,0 +1,82 @@
+/* bulk action icons live in the Transcripts row, right before the funnel (shown only with a selection) */
+.bulk-bar {
+  display: none; align-items: center; gap: 4px; margin-left: auto;
+}
+.bulk-bar .icon-btn { padding: 3px 7px; }
+.bulk-bar .icon-btn svg { width: 14px; height: 14px; }
+/* rightmost button: anchor to its right edge so the tip stays inside the sidebar */
+.bulk-bar button:last-child[data-tip]:hover::after {
+  left: auto; right: 0; transform: none;
+}
+
+.session-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  display: flex; gap: 8px; align-items: flex-start;
+}
+.si-text { flex: 1; min-width: 0; }
+.session-item:hover { background: var(--bg3); }
+.session-item.selected {
+  background: rgba(88, 166, 255, .13);
+  border-left-color: var(--accent);
+}
+.session-item.selected:hover { background: rgba(88, 166, 255, .2); }
+/* the latest clicked item (anchor) stands out from the rest of the selection */
+.session-item.active {
+  background: rgba(88, 166, 255, .3);
+  border-left-color: var(--accent);
+}
+.session-item .title { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-item .meta { color: var(--muted); font-size: 11.5px; margin-top: 3px; display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* project groups */
+.proj-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  position: sticky; top: 0; z-index: 5;
+  font-size: 12px;
+}
+.proj-head:hover { background: var(--bg4); }
+.proj-toggle { color: var(--muted); width: 12px; flex: 0 0 auto; }
+.proj-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.proj-head .badge { flex: 0 0 auto; }
+
+/* list title row: "Transcripts" + filter icon (tapping the icon swaps in the project dropdown) */
+.list-title {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--bg2);
+}
+.list-title-text { font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+/* select-all checkbox (left of the title) */
+.list-title .selectall { display: flex; align-items: center; cursor: pointer; }
+.list-title .selectall input { width: 14px; height: 14px; cursor: pointer; }
+
+/* filter icon: tapping it reveals a project menu below (selected item gets a checkmark) */
+.filter-wrap { position: relative; margin-left: auto; }
+.filter-icon {
+  background: none; border: none; cursor: pointer; color: var(--muted);
+  padding: 3px; display: flex; align-items: center; border-radius: 4px;
+}
+.filter-icon:hover { color: var(--text); background: var(--bg4); }
+.filter-icon svg { width: 14px; height: 14px; }
+.filter-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 50;
+  min-width: 220px; max-width: 320px; max-height: 320px; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4); display: none;
+}
+.filter-menu.open { display: block; }
+.filter-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.filter-item:hover { background: var(--bg4); }
+.filter-item .check { width: 14px; flex: 0 0 auto; color: var(--accent); }
+.filter-item .label { overflow: hidden; text-overflow: ellipsis; }
+/* separator inside the filter menu (above the "Show archived" toggle) */
+.filter-sep { height: 1px; margin: 5px 8px; background: var(--border); }

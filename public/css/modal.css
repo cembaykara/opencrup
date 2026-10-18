@@ -1,0 +1,16 @@
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  width: 480px; max-width: calc(100vw - 40px); padding: 20px;
+}
+.modal h2 { margin: 0 0 14px; font-size: 16px; }
+.modal .field { margin-bottom: 12px; }
+.modal .field label { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.modal .field input, .modal .field select { width: 100%; }
+.modal .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.modal .modal-sub { margin: -6px 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.modal .field label.check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; margin-bottom: 0; cursor: pointer; }
+.modal .field label.check input { width: auto; }

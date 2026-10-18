@@ -1990,7 +1990,7 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(400, "invalid JSON body")
 
     def _serve_static(self, path):
-        rel = "/index.html" if path == "/" else path
+        rel = "index.html" if path == "/" else path.lstrip("/")
         public_root = str(PUBLIC_DIR.resolve())
         file = (PUBLIC_DIR / rel).resolve()
         if not str(file).startswith(public_root) or not file.is_file():
