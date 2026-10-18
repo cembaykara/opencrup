@@ -5,7 +5,7 @@
 
 # 📦 OpenCrup
 
-A local dashboard for your **opencode**, **Cursor**, and **Claude Code** agent conversations. Browse and search chat history by project, read and edit messages, and move a conversation between any of the three — it lands in the real app with the full history.
+A local dashboard for your **opencode**, **Cursor**, and **Claude Code** agent conversations. Browse and search chat history by project, read and edit messages, and move a conversation between any of the three. It lands in the real app with the full history.
 
 Python 3 stdlib only. No install, no build step.
 
@@ -22,12 +22,12 @@ Python 3 stdlib only. No install, no build step.
 
 ## 🚚 Moving conversations
 
-The main reason to use this. Take a conversation from one app and drop it into another — opencode, Cursor, or Claude Code, in any direction. OpenCrup writes it into the target app's own stores, so it appears in the real sidebar and loads with every reply and tool call.
+The main reason to use this. Take a conversation from one app and drop it into another: opencode, Cursor, or Claude Code, in any direction. OpenCrup writes it into the target app's own stores, so it appears in the real sidebar and loads with every reply and tool call.
 
-- **→ Cursor** — writes the transcript, composer record, message bubbles, sidebar entry, and search index.
-- **→ opencode** — imports it into opencode's SQLite store.
-- **→ Claude Code** — writes the `.jsonl` transcript and marks the project trusted in `~/.claude.json`.
-- **Delete** — purges it from every store so it's gone from the real app too.
+- **→ Cursor**: writes the transcript, composer record, message bubbles, sidebar entry, and search index.
+- **→ opencode**: imports it into opencode's SQLite store.
+- **→ Claude Code**: writes the `.jsonl` transcript and marks the project trusted in `~/.claude.json`.
+- **Delete**: purges it from every store so it's gone from the real app too.
 
 The destination is a dropdown of the target's existing projects, defaulting to the conversation's own path.
 
@@ -37,7 +37,7 @@ The destination is a dropdown of the target's existing projects, defaulting to t
 
 Search and group conversations by project. Read markdown, thinking blocks, and tool calls (input + output). Edit or delete individual messages, or select a range and delete/archive in bulk. Export a session as JSON.
 
-Every view is a shareable deep link — `?source=opencode&session=<id>` opens straight to a conversation, so you can point a teammate (or a screenshot) right at it.
+Every view is a shareable deep link: `?source=opencode&session=<id>` opens straight to a conversation, so you can point a teammate (or a screenshot) right at it.
 
 ---
 
@@ -59,6 +59,14 @@ Or `python3 server.py`.
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code config root (transcripts in `projects/`) |
 
 Binds to localhost by default. Runs in SQLite WAL mode, so it can run while opencode is open.
+
+---
+
+## 💻 Local by design
+
+OpenCrup runs on your machine and works with the same local files each app already uses to store conversations. It doesn't call their servers or decompile them, so your data stays on your disk.
+
+Quit the target app before a move, and keep a backup before bulk deletes. This is an independent project.
 
 ---
 
