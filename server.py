@@ -1925,6 +1925,151 @@ def move_claude_to_cursor(conn, sid, directory, delete_original=False):
     return {"id": f"{cslug}::{cuuid}", "slug": cslug, "uuid": cuuid, "directory": directory}
 
 
+# --- move -> claude: write a Claude Code .jsonl transcript -------------------
+_CLAUDE_VERSION = "2.1.292"  # cosmetic: the version stamped into moved transcripts
+
+
+def _claude_slug_from_path(path):
+    """Claude Code project slug: every non-alphanumeric char -> '-'
+    (e.g. /private/tmp -> -private-tmp)."""
+    return re.sub(r"[^a-zA-Z0-9]", "-", path)
+
+
+def _claude_iso(ms):
+    """Epoch ms -> ISO 8601 (the timestamp format Claude Code transcripts use)."""
+    dt = (datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc) if ms
+          else datetime.datetime.now(datetime.timezone.utc))
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _claude_config_path():
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(env).expanduser() if env else Path.home() / ".claude"
+
+
+def _write_claude_transcript(directory, messages, session_id):
+    """Write a unified-message conversation as a Claude Code .jsonl transcript.
+
+    user content is a plain string; assistant content is an array of
+    text/tool_use/thinking blocks; lines are chained via parentUuid (linear)
+    and stamped with cwd/sessionId/version/gitBranch. Returns the path.
+    """
+    tdir = _claude_projects_dir() / _claude_slug_from_path(directory)
+    tdir.mkdir(parents=True, exist_ok=True)
+    path = tdir / f"{session_id}.jsonl"
+    now = now_ms()
+    lines = []
+    parent = None
+    for m in messages:
+        d = m["data"]
+        ts = _claude_iso(m.get("time_created") or now)
+        uid = str(uuid.uuid4())
+        if m["type"] == "user":
+            line = {
+                "parentUuid": parent, "isSidechain": False, "type": "user",
+                "message": {"role": "user", "content": d.get("text", "")},
+                "uuid": uid, "timestamp": ts, "cwd": directory,
+                "sessionId": session_id, "version": _CLAUDE_VERSION, "gitBranch": "HEAD",
+            }
+        else:
+            content = []
+            for c in (d.get("content") or []):
+                if not isinstance(c, dict):
+                    continue
+                t = c.get("type")
+                if t == "text":
+                    content.append({"type": "text", "text": c.get("text", "")})
+                elif t == "reasoning":
+                    content.append({"type": "thinking", "thinking": c.get("text", "")})
+                elif t == "tool":
+                    state = c.get("state") or {}
+                    content.append({"type": "tool_use", "id": "toolu_" + rand_base62(24),
+                                    "name": c.get("name", "tool"), "input": state.get("input")})
+            line = {
+                "parentUuid": parent, "isSidechain": False, "type": "assistant",
+                "message": {"id": str(uuid.uuid4()), "model": "claude-sonnet-4-5",
+                            "role": "assistant", "stop_reason": "end_turn", "type": "message",
+                            "usage": {"input_tokens": 0, "output_tokens": 0},
+                            "content": content},
+                "uuid": uid, "timestamp": ts, "cwd": directory,
+                "sessionId": session_id, "version": _CLAUDE_VERSION, "gitBranch": "HEAD",
+            }
+        lines.append(line)
+        parent = uid
+    path.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    return path
+
+
+def _claude_index_entry(directory):
+    """Best-effort: mark the project trusted in ~/.claude.json so claude --resume
+    lists it. The session list itself comes from scanning the transcript dirs.
+    Config path: $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json (home)."""
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    cfg = (Path(env).expanduser() / ".claude.json") if env else Path.home() / ".claude.json"
+    try:
+        data = json.loads(cfg.read_text()) if cfg.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    entry = data.setdefault("projects", {}).setdefault(directory, {})
+    if not entry.get("hasTrustDialogAccepted"):
+        entry["hasTrustDialogAccepted"] = True
+    try:
+        cfg.write_text(json.dumps(data, indent=2))
+    except OSError:
+        pass
+
+
+def move_opencode_to_claude(conn, sid, directory, delete_original=False):
+    """Copy an opencode session into a Claude Code project as a .jsonl transcript."""
+    if not isinstance(directory, str) or not directory:
+        raise HttpError(400, "directory is required")
+    if conn.execute("SELECT id FROM session_v2 WHERE id = ?", (sid,)).fetchone() is None:
+        raise HttpError(404, "session not found")
+    msgs = []
+    for m in conn.execute(
+        "SELECT type, data, time_created FROM session_message WHERE session_id = ? ORDER BY seq",
+        (sid,)).fetchall():
+        d = json.loads(m["data"]) if isinstance(m["data"], str) else m["data"]
+        if m["type"] == "user":
+            msgs.append({"type": "user", "time_created": m["time_created"],
+                         "data": {"text": d.get("text", "")}})
+        else:
+            msgs.append({"type": "assistant", "time_created": m["time_created"],
+                         "data": {"content": d.get("content") or []}})
+    session_id = str(uuid.uuid4())
+    _write_claude_transcript(directory, msgs, session_id)
+    _claude_index_entry(directory)
+    _CLAUDE_CACHE.clear(); _CLAUDE_CWD.clear()
+    if delete_original:
+        conn.execute("DELETE FROM session_v2 WHERE id = ?", (sid,))  # messages cascade
+        conn.commit()
+    return {"id": f"{_claude_slug_from_path(directory)}::{session_id}", "directory": directory}
+
+
+def move_cursor_to_claude(conn, sid, directory, delete_original=False):
+    """Copy a Cursor .jsonl transcript into a Claude Code project."""
+    if not isinstance(directory, str) or not directory:
+        raise HttpError(400, "directory is required")
+    cslug, cuid = sid.split("::", 1)  # `uuid` is also a module; don't shadow it
+    path = _cursor_transcript_path(cslug, cuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    msgs = _parse_cursor_transcript(path)
+    session_id = str(uuid.uuid4())
+    _write_claude_transcript(directory, msgs, session_id)
+    _claude_index_entry(directory)
+    _CLAUDE_CACHE.clear(); _CLAUDE_CWD.clear()
+    if delete_original:
+        path.unlink(missing_ok=True)
+        for ext in (".title", ".archived"):
+            (path.parent / f"{cuid}{ext}").unlink(missing_ok=True)
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+    return {"id": f"{_claude_slug_from_path(directory)}::{session_id}", "directory": directory}
+
+
 def _opencode_default_model(conn):
     """Return the model object (dict) the real opencode app last used, as a
     fallback for moved-in sessions. Cursor transcripts carry no model, but the
@@ -2354,10 +2499,14 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/cursor/sessions/([^/]+)/purge$", path)
             if m:
                 return self._send_json(200, cursor_purge_session(unquote(m.group(1))))
-            m = re.match(r"^/api/cursor/sessions/([^/]+)/move-to-opencode$", path)
+            m = re.match(r"^/api/cursor/sessions/([^/]+)/move-to-(opencode|claude)$", path)
             if m:
                 with closing(connect()) as conn:
-                    return self._send_json(200, move_cursor_to_opencode(
+                    if m.group(2) == "opencode":
+                        return self._send_json(200, move_cursor_to_opencode(
+                            conn, unquote(m.group(1)), body.get("directory"),
+                            bool(body.get("delete_original"))))
+                    return self._send_json(200, move_cursor_to_claude(
                         conn, unquote(m.group(1)), body.get("directory"),
                         bool(body.get("delete_original"))))
             return self._send_json(404, {"error": "not found"})
@@ -2479,9 +2628,13 @@ class Handler(BaseHTTPRequestHandler):
                             body.get("name"), body.get("children"))})
                     if path == "/api/sources/cursor":
                         return self._send_json(200, add_cursor_source(body.get("path", "")))
-                    m = re.match(r"^/api/sessions/([^/]+)/move-to-cursor$", path)
+                    m = re.match(r"^/api/sessions/([^/]+)/move-to-(cursor|claude)$", path)
                     if m:
-                        return self._send_json(200, move_opencode_to_cursor(
+                        if m.group(2) == "cursor":
+                            return self._send_json(200, move_opencode_to_cursor(
+                                conn, unquote(m.group(1)), body.get("directory"),
+                                bool(body.get("delete_original"))))
+                        return self._send_json(200, move_opencode_to_claude(
                             conn, unquote(m.group(1)), body.get("directory"),
                             bool(body.get("delete_original"))))
                     return self._send_json(404, {"error": "not found"})

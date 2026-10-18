@@ -61,7 +61,7 @@ export function renderDetail() {
           <button class="btn small" id="btn-edit-title">Rename<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
           <button class="btn small" id="btn-archive">${s.time_archived ? "Unarchive" : "Archive"}</button>
           <button class="btn small" id="btn-export">Export JSON</button>
-          <button class="btn small" id="btn-move" title="Copy this conversation to another source">${state.source === "opencode" ? "Move to Cursor" : state.source === "cursor" ? "Move to opencode" : "Move…"}</button>
+          <button class="btn small" id="btn-move" title="Copy this conversation to another source">Move…</button>
           <button class="btn small danger" id="btn-delete">Delete<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
         </div>
       </div>
@@ -109,11 +109,11 @@ export async function moveSessionTo(sessionId, directory) {
 // target project folder + whether to delete the original, then converts and
 // jumps to the new conversation in the other source.
 export async function openMoveModal(sessionId, currentDir) {
-  // opencode/cursor have a single fixed target; claude can move to either.
-  const fixedTarget = state.source === "opencode" ? "cursor"
-    : state.source === "cursor" ? "opencode" : null;
-  let target = fixedTarget;
-  const label = (t) => (t === "cursor" ? "Cursor" : "opencode");
+  // Every source can move to either of the other two; pre-select the common one.
+  const label = (t) => (t === "cursor" ? "Cursor" : t === "claude" ? "Claude Code" : "opencode");
+  const defaultTarget = state.source === "cursor" ? "opencode" : "cursor";
+  const targets = ["opencode", "cursor", "claude"].filter((t) => t !== state.source);
+  let target = defaultTarget;
 
   // Existing projects in the target source — the move lands in one of these.
   // Fetch by target (not the current view), so a move lists the destination's
@@ -121,7 +121,9 @@ export async function openMoveModal(sessionId, currentDir) {
   const fetchOptions = async (t) => {
     let opts = [];
     try {
-      const projs = t === "cursor" ? await api("/api/cursor/projects") : await api("/api/projects");
+      const projs = t === "cursor" ? await api("/api/cursor/projects")
+        : t === "claude" ? await api("/api/claude/projects")
+        : await api("/api/projects");
       opts = projs.map((p) => p.worktree);
     } catch { /* best-effort */ }
     if (currentDir && !opts.includes(currentDir)) opts.unshift(currentDir); // preserve source path
@@ -134,13 +136,12 @@ export async function openMoveModal(sessionId, currentDir) {
     <div class="modal">
       <h2 id="mv-title">Move…</h2>
       <p class="modal-sub" id="mv-sub"></p>
-      ${fixedTarget ? "" : `<div class="field">
+      <div class="field">
         <label>Target source</label>
         <select id="mv-target">
-          <option value="opencode">opencode</option>
-          <option value="cursor">Cursor</option>
+          ${targets.map((t) => `<option value="${t}"${t === target ? " selected" : ""}>${label(t)}</option>`).join("")}
         </select>
-      </div>`}
+      </div>
       <div class="field">
         <label>Target project</label>
         <div id="mv-dir-wrap"></div>
@@ -170,9 +171,8 @@ export async function openMoveModal(sessionId, currentDir) {
       : `<input id="mv-dir" value="${escapeHtml(currentDir || "")}" disabled><p class="modal-sub">No ${label(t)} projects found yet.</p>`;
   };
 
-  const targetSel = backdrop.querySelector("#mv-target");
-  if (targetSel) targetSel.addEventListener("change", () => renderDir(targetSel.value));
-  await renderDir(target || "opencode");
+  backdrop.querySelector("#mv-target").addEventListener("change", (e) => renderDir(e.target.value));
+  await renderDir(target);
 
   backdrop.querySelector("#mv-go").addEventListener("click", async () => {
     const directory = backdrop.querySelector("#mv-dir").value.trim();
