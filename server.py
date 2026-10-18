@@ -12,6 +12,7 @@ Environment:
     HOST         bind address (default 127.0.0.1)
     OPENCODE_DB  database path (default ~/.local/share/opencode/opencode.db)
 """
+import base64
 import datetime
 import hashlib
 import json
@@ -1514,12 +1515,192 @@ def cursor_composer_diag(uuid):
     return info
 
 
+# --- 3.x-native chats: content in the agentKv:blob store ----------------------
+# Native 3.x chats have no local .jsonl transcript. Their messages are
+# content-addressed blobs (cursorDiskKV `agentKv:blob:<sha256>`), indexed by
+# the composer's `conversationState` (field 1 = ordered 32-byte blob refs).
+
+def _cursor_global_db():
+    return _cursor_appdata_dir() / "User" / "globalStorage" / "state.vscdb"
+
+
+def _cursor_composer_value(cuuid):
+    """Raw composerData value for a composer, or None."""
+    gs = _cursor_global_db()
+    if not gs.is_file():
+        return None
+    try:
+        c = sqlite3.connect(str(gs), timeout=10)
+        row = c.execute(
+            "SELECT value FROM cursorDiskKV WHERE key=?",
+            (f"composerData:{cuuid}",)).fetchone()
+        c.close()
+    except sqlite3.Error:
+        return None
+    return row[0] if row else None
+
+
+def _proto_varint(data, i):
+    """Read a protobuf varint at i; returns (value, next_i)."""
+    val = shift = 0
+    while i < len(data):
+        b = data[i]
+        i += 1
+        val |= (b & 0x7F) << shift
+        if not b & 0x80:
+            return val, i
+        shift += 7
+    return val, i
+
+
+def _cursor_blob_refs(conversation_state):
+    """Ordered blob refs (hex) from a conversationState value
+    ('~' + base64 protobuf)."""
+    if not isinstance(conversation_state, str) \
+            or not conversation_state.startswith("~"):
+        return []
+    try:
+        data = base64.b64decode(conversation_state[1:])
+    except Exception:
+        return []
+    refs = []
+    i = 0
+    while i < len(data):
+        tag, i = _proto_varint(data, i)
+        if tag == 0x0a:  # field 1: 32-byte blob ref
+            ln, i = _proto_varint(data, i)
+            refs.append(data[i:i + ln].hex())
+            i += ln
+        elif tag & 0x07 == 0:  # varint (field 26: timestamp)
+            _, i = _proto_varint(data, i)
+        elif tag & 0x07 == 2:  # other length-delimited (field 27: tz)
+            ln, i = _proto_varint(data, i)
+            i += ln
+        else:
+            break
+    return refs
+
+
+def _cursor_blob_message(blob):
+    """One agentKv:blob -> unified message, or None if not displayable.
+
+    3.x blob content items: text / reasoning / redacted-reasoning /
+    tool-call (toolName + args). role=tool blobs (tool-result) are folded
+    into the preceding assistant message by _cursor_blob_messages."""
+    role = blob.get("role")
+    content = blob.get("content")
+    if role == "user":
+        if isinstance(content, str):
+            return None  # injected context (<user_info>), not a real prompt
+        text = "".join(c.get("text", "") for c in content
+                       if isinstance(c, dict) and c.get("type") == "text")
+        return {"type": "user", "time_created": 0,
+                "data": {"text": _clean_user_text(text)}}
+    if role == "assistant" and isinstance(content, list):
+        out = []
+        for c in content:
+            if not isinstance(c, dict):
+                continue
+            t = c.get("type")
+            if t == "text":
+                out.append({"type": "text", "text": c.get("text", "")})
+            elif t == "reasoning":
+                out.append({"type": "reasoning", "text": c.get("text", "")})
+            elif t == "tool-call":
+                out.append({"type": "tool", "name": c.get("toolName", "tool"),
+                            "toolCallId": c.get("toolCallId"),
+                            "state": {"status": "completed",
+                                      "input": c.get("args"), "content": []}})
+        if out:
+            return {"type": "assistant", "time_created": 0,
+                    "data": {"content": out}}
+    return None
+
+
+def _cursor_blob_messages(cuuid):
+    """Messages of a 3.x-native chat, reconstructed from the agentKv:blob
+    store via the composer's conversationState index."""
+    raw = _cursor_composer_value(cuuid)
+    key = ("blob", cuuid,
+           hashlib.sha256((raw or "").encode("utf-8", "replace")).hexdigest())
+    cached = _CURSOR_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        comp = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        comp = {}
+    refs = _cursor_blob_refs(comp.get("conversationState"))
+    messages = []
+    if refs:
+        gs = _cursor_global_db()
+        try:
+            c = sqlite3.connect(str(gs), timeout=10)
+            rows = c.execute(
+                "SELECT key, value FROM cursorDiskKV WHERE key IN ("
+                + ",".join("?" * len(refs)) + ")",
+                [f"agentKv:blob:{r}" for r in refs]).fetchall()
+            c.close()
+        except sqlite3.Error:
+            rows = []
+        by_ref = {k[len("agentKv:blob:"):]: v for k, v in rows}
+        for ref in refs:
+            raw_blob = by_ref.get(ref)
+            if not raw_blob:
+                continue
+            try:
+                blob = json.loads(raw_blob)
+            except (ValueError, TypeError):
+                continue
+            role = blob.get("role")
+            content = blob.get("content")
+            if role == "tool" and isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict) \
+                            or item.get("type") != "tool-result":
+                        continue
+                    target = None
+                    for m in reversed(messages):
+                        if m["type"] != "assistant":
+                            continue
+                        for t in m["data"]["content"]:
+                            if t.get("type") == "tool" \
+                                    and t.get("toolCallId") == item.get("toolCallId"):
+                                target = t
+                                break
+                        if target:
+                            break
+                    if target is None:  # orphan: last tool of last assistant
+                        for m in reversed(messages):
+                            if m["type"] == "assistant":
+                                tools = [t for t in m["data"]["content"]
+                                         if t.get("type") == "tool"]
+                                if tools:
+                                    target = tools[-1]
+                                break
+                    if target is not None:
+                        result = item.get("result")
+                        target["state"]["content"] = [{
+                            "text": result if isinstance(result, str)
+                            else json.dumps(result)}]
+                    break
+                continue
+            msg = _cursor_blob_message(blob)
+            if msg is not None:
+                messages.append(msg)
+    for i, msg in enumerate(messages):
+        msg["id"] = str(i)
+    _CURSOR_CACHE[key] = messages
+    return messages
+
+
 def _cursor_header_chats(include_archived=False):
     """Chats the real app lists from its composerHeaders store (3.x) but that
     have no local transcript — native 3.x chats whose content lives in the
-    agent store / cloud. Moved-in chats have a transcript and are already
-    covered by the transcript scan, so they are skipped here."""
-    gs = _cursor_appdata_dir() / "User" / "globalStorage" / "state.vscdb"
+    agentKv:blob store (see _cursor_blob_messages). Moved-in chats have a
+    transcript and are already covered by the transcript scan, so they are
+    skipped here."""
+    gs = _cursor_global_db()
     if not gs.is_file():
         return []
     workspaces = _cursor_workspaces()
@@ -1528,10 +1709,47 @@ def _cursor_header_chats(include_archived=False):
         rows = c.execute(
             "SELECT composerId, workspaceId, createdAt, lastUpdatedAt,"
             " isArchived, value FROM composerHeaders").fetchall()
+        comp_rows = c.execute(
+            "SELECT key, value FROM cursorDiskKV"
+            " WHERE key LIKE 'composerData:%'").fetchall()
         c.close()
     except sqlite3.Error:
         return []
     have = {u for _slug, u, _p in _iter_cursor_transcripts()}
+    # per-composer blob refs, then one cheap substr() pass for the role of
+    # each referenced blob (counts user/assistant messages without pulling
+    # the full blob values)
+    refs_by_chat = {}
+    ref_keys = []
+    for key, value in comp_rows:
+        try:
+            cs = json.loads(value).get("conversationState")
+        except (ValueError, TypeError):
+            continue
+        refs = _cursor_blob_refs(cs)
+        if not refs:
+            continue
+        refs_by_chat[key[len("composerData:"):]] = refs
+        ref_keys.extend(f"agentKv:blob:{r}" for r in refs)
+    heads = {}
+    if ref_keys:
+        try:
+            c = sqlite3.connect(str(gs), timeout=10)
+            head_rows = c.execute(
+                "SELECT key, substr(value, 1, 64) FROM cursorDiskKV"
+                " WHERE key IN (" + ",".join("?" * len(ref_keys)) + ")",
+                ref_keys).fetchall()
+            c.close()
+        except sqlite3.Error:
+            head_rows = []
+        for key, head in head_rows:
+            if isinstance(head, bytes):
+                head = head.decode("utf-8", "replace")
+            m = re.search(r'"role"\s*:\s*"(\w+)"', head or "")
+            role = m.group(1) if m else None
+            heads[key] = (role,
+                          re.search(r'"content"\s*:\s*\[', head or "") is not None,
+                          re.search(r'"content"\s*:\s*\[\s*\]', head or "") is not None)
     out = []
     for cuuid, ws_id, created, updated, archived, value in rows:
         if cuuid in have:
@@ -1547,6 +1765,13 @@ def _cursor_header_chats(include_archived=False):
         if archived and not include_archived:
             continue
         folder = workspaces.get(ws_id, (None, None))[1]
+        refs = refs_by_chat.get(cuuid, [])
+        count = sum(
+            1 for r in refs
+            if (lambda role, is_list, is_empty: role == "assistant"
+                and not is_empty
+                or (role == "user" and is_list))
+            (*heads.get(f"agentKv:blob:{r}", (None, False, False))))
         out.append({
             "id": f"{ws_id}::{cuuid}",
             "title": head.get("name") or head.get("subtitle") or "Untitled conversation",
@@ -1557,7 +1782,7 @@ def _cursor_header_chats(include_archived=False):
             "time_archived": (updated or 0) if archived else None,
             "agent": None,
             "model": None,
-            "message_count": 0,
+            "message_count": count,
             "local": False,
         })
     return out
@@ -1639,7 +1864,7 @@ def cursor_get_session(sid):
                     "agent": None,
                     "model": None,
                     "local": False,
-                    "messages": [],
+                    "messages": _cursor_blob_messages(uuid),
                 }
         raise HttpError(404, "conversation not found")
     mtime = int(path.stat().st_mtime * 1000)
