@@ -14,6 +14,10 @@ Python 3 stdlib only. No install, no build step.
   <img src="docs/opencode_view.png" alt="OpenCrup opencode view: read, edit, move" width="45%" style="border-radius:12px;"/>
 </p>
 
+<p align="center">
+  <img src="docs/conversation_view.png" alt="OpenCrup conversation view: thinking, tool calls, and code" width="85%" style="border-radius:12px;"/>
+</p>
+
 ---
 
 ## 🚚 Moving conversations
@@ -32,6 +36,8 @@ The destination is a dropdown of the target's existing projects, defaulting to t
 ## ✨ Everything else
 
 Search and group conversations by project. Read markdown, thinking blocks, and tool calls (input + output). Edit or delete individual messages, or select a range and delete/archive in bulk. Export a session as JSON.
+
+Every view is a shareable deep link — `?source=opencode&session=<id>` opens straight to a conversation, so you can point a teammate (or a screenshot) right at it.
 
 ---
 

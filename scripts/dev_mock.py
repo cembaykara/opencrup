@@ -237,6 +237,10 @@ def main():
     print(f"mock opencode DB: {db}")
     sys.path.insert(0, str(BASE))
     import server
+    # Ignore any real ~/.opencrup/config.json so the mock DB (OPENCODE_DB env)
+    # wins over a persisted opencode_db override. Cursor/Claude fall back to
+    # their real defaults, which is what we want on the home screen.
+    server.CONFIG_PATH = tmp / "config.json"
     server.main()
 
 

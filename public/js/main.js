@@ -2,7 +2,8 @@ import { state } from "./state.js";
 import { $, api, toast } from "./util.js";
 import { loadSessions, renderFilterMenu, closeFilterMenu, refreshAll } from "./data.js";
 import { renderSessionList, bulkAction, clearSelection } from "./list.js";
-import { showHome, renderHome } from "./nav.js";
+import { showHome, renderHome, showViewer } from "./nav.js";
+import { selectSession } from "./detail.js";
 
 // ---------------------------------------------------------------------------
 // init
@@ -61,4 +62,12 @@ $("main").addEventListener("click", (e) => {
     window.__home = env.home;
   } catch {}
   renderHome();
+  // deep link: ?source=opencode&session=<id> (shareable / screenshot-able views)
+  const params = new URLSearchParams(location.search);
+  const src = params.get("source");
+  if (src && ["opencode", "cursor", "claude"].includes(src)) {
+    await showViewer(src);
+    const sid = params.get("session");
+    if (sid) selectSession(sid);
+  }
 })();
