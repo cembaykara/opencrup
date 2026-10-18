@@ -1,24 +1,33 @@
-# OpenCrup
+# OpenCrup — opencode & Cursor AI chat manager
 
-Your agents talk a lot. OpenCrup lets you **read, edit, and move** those conversations — across **opencode** and **Cursor** — from one local dashboard. No install, no dependencies, just Python 3 stdlib doing the heavy lifting.
+> A local, zero-dependency **viewer and manager for AI agent chat histories**. Read, search, edit, and **move conversations between [opencode](https://opencode.ai) and Cursor** — from one Python 3 dashboard. No install, no build step.
 
-![OpenCrup home screen](docs/home.png)
+[![Python](https://img.shields.io/badge/python-3.x-478859?labelColor=black)]()
+[![Dependencies](https://img.shields.io/badge/deps-none-0097a7?labelColor=black)]()
+[![Platform](https://img.shields.io/badge/platform-macOS%20·%20Windows%20·%20Linux-2f74d0?labelColor=black)]()
+[![License](https://img.shields.io/badge/license-MIT-d43b4b?labelColor=black)]()
 
-Pick a source, open a conversation. Only sources that actually exist on this machine show up; a `+` points it at a Cursor install the scan missed.
+OpenCrup is a local dashboard for your **opencode** and **Cursor** agent conversations. Browse and **search chat history** by project, read markdown, collapsed thinking blocks, and tool calls, edit or delete individual messages, and — the headline feature — **move a conversation from opencode into Cursor (or back)** so it appears in the real app's sidebar with the full history.
+
+## Screenshots
+
+| Home — pick a source | opencode view — read, edit, move |
+|---|---|
+| ![OpenCrup home screen: choose an opencode or Cursor source and open a conversation](docs/home.png) | ![OpenCrup opencode view: read, edit, and move an AI agent conversation](docs/opencode_view.png) |
 
 ## 🚚 Move conversations between opencode and Cursor
 
-The headline act. Take a conversation that started in opencode and drop it into Cursor — or pull one back the other way. OpenCrup converts it to the target's native format **and** injects it into the target app's own stores, so it shows up in the real sidebar and loads with every reply, tool call, and thinking block intact. No re-typing, no copy-paste, no "where did my history go?".
+The headline act. Take a conversation that started in opencode and drop it into Cursor — or pull one back the other way. OpenCrup converts it to the target's native format **and** injects it into the target app's own stores, so it shows up in the real sidebar and loads with every reply and tool call intact. No re-typing, no copy-paste, no "where did my history go?".
 
-- **opencode → Cursor** — writes the `.jsonl` transcript *and* the composer record, message bubbles, workspace sidebar entry, and search index. The real Cursor app lists it and renders the whole thing — visible text, tool calls, the render gate, all of it.
+- **opencode → Cursor** — writes the `.jsonl` transcript *and* the composer record, message bubbles, sidebar entry, and search index. The real Cursor app lists it and renders the whole thing — visible text and tool calls, all of it.
 - **Cursor → opencode** — imports it into opencode's SQLite store so it lives in the opencode view.
-- **Delete** — purge it from *every* store (transcript, encrypted reasoning, search index, cloud-sync copy, UI state, telemetry). No ghosts, no residue.
+- **Delete** — purge it from *every* store so it's gone from the real app too. No ghosts, no residue.
 
-Pick the destination from a dropdown of the target's existing projects. It even defaults to the conversation's own path, so the common case is one click.
+Pick the destination from a dropdown of the target's existing projects. It defaults to the conversation's own path, so the common case is one click.
 
 ## What else it does
 
-Browse, search, and group conversations by project. Read markdown, collapsed thinking blocks, tool calls (input + output), and system events. Edit or delete individual messages. Select a range and delete, archive, or unarchive in bulk. Export a session as JSON.
+Browse, search, and group **AI agent conversations** by project. Read markdown, collapsed thinking blocks, tool calls (input + output), and system events. Edit or delete individual messages. Select a range and delete, archive, or unarchive in bulk. Export a session as JSON.
 
 ## Run
 
@@ -42,71 +51,14 @@ Or `python3 server.py`.
 
 The server binds to localhost by default. It uses SQLite WAL mode and short transactions, so it can run while opencode is open.
 
-## Dev mode
-
-`dev_mock.py` starts a second server against a temporary database of fake opencode sessions. Your real conversations are not read. The database is removed when the process exits.
-
-```bash
-python3 dev_mock.py          # http://127.0.0.1:4322
-python3 dev_mock.py -p 5000
-```
-
-![OpenCrup opencode view](docs/opencode_view.png)
-
-## Deleting a Cursor conversation
-
-A Cursor conversation lives in more than the transcript file. Deleting one from OpenCrup removes it from all of these:
-
-| Store | Path |
-|---|---|
-| Transcript | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/` |
-| Encrypted reasoning | `~/.cursor/chats/<hash>/<uuid>/store.db` |
-| Search index | `conversation-search.db` |
-| Cloud-sync copy | `AgentStores/cursor_agent_stores/<uuid>/` |
-| UI state | `state.vscdb` |
-| Telemetry | `ai-tracking/ai-code-tracking.db` |
-
-If Cursor still has a copy on its servers, a later sync can bring it back. That copy is outside this app.
-
-The same purge is available from the command line:
-
-```bash
-python3 purge_cursor.py <uuid-or-prefix> [--dry-run]
-```
-
-## Layout
-
-| File | Role |
-|---|---|
-| `server.py` | HTTP server, opencode database, Cursor transcript parsing, move + purge |
-| `public/index.html` | Frontend |
-| `purge_cursor.py` | Standalone purge CLI |
-| `dev_mock.py` | Mock opencode data for local development |
-| `start.sh` | Launcher |
-
-Python standard library only (`http.server`, `sqlite3`). No package install and no build step.
-
-## API
-
-opencode routes:
-
-- `GET` / `POST /api/sessions`
-- `GET` / `PATCH` / `DELETE /api/sessions/:id`
-- `PATCH` / `DELETE /api/messages/:id`
-- `POST /api/sessions/:id/move-to-cursor` with `{directory, delete_original}`
-
-Cursor routes use the same shapes under `/api/cursor`, plus:
-
-- `POST /api/cursor/sessions/:id/purge`
-- `POST /api/cursor/sessions/:id/move-to-opencode` with `{directory, delete_original}`
-
-A Cursor session id is `<project-slug>::<transcript-uuid>`.
-
-Sources:
-
-- `GET /api/sources` — which sources were found, and how many sessions each has
-- `POST /api/sources/cursor` — save a Cursor path the scan missed
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+<details>
+<summary>Keywords</summary>
+
+opencode, Cursor, AI agent, chat history, transcript, viewer, editor, move conversations, migrate chats, local dashboard, SQLite, .jsonl, no dependencies, Python 3, LLM, LLM chat manager, agent transcripts, opencode to Cursor, Cursor to opencode
+</details>
