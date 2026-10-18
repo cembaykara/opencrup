@@ -51,7 +51,11 @@ export function closeFilterMenu() {
 
 export async function loadModels() {
   if (state.source === "cursor") { state.models = []; return; }
-  state.models = await api(base() + "/models");
+  try {
+    state.models = await api(base() + "/models");
+  } catch {
+    state.models = []; // source without a /models endpoint (e.g. claude)
+  }
 }
 
 export async function loadSessions() {

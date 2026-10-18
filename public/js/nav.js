@@ -34,6 +34,10 @@ export async function showViewer(source) {
       const env = await api("/api/cursor/env");
       window.__home = env.home;
       $("#db-sub").textContent = `${env.count} conversations · ${env.dir.replace(/^\/Users\/[^/]+/, "~")}`;
+    } else if (source === "claude") {
+      const env = await api("/api/claude/env");
+      window.__home = env.home;
+      $("#db-sub").textContent = `${env.count} sessions · ${env.dir.replace(/^\/Users\/[^/]+/, "~")}`;
     } else {
       const env = await api("/api/env");
       window.__home = env.home;
@@ -53,11 +57,15 @@ const SOURCE_META = {
     name: "cursor", desc: "Cursor agent chats",
     icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 3l14 7-6 1.5L9.5 19z"/></svg>',
   },
+  claude: {
+    name: "claude", desc: "Claude Code sessions",
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-11 4 7 2-3 4 7z"/><line x1="4" y1="20" x2="20" y2="20"/></svg>',
+  },
 };
 
 function sourceCardHtml(source, info) {
   const m = SOURCE_META[source];
-  const noun = source === "opencode" ? "sessions" : "conversations";
+  const noun = source === "cursor" ? "conversations" : "sessions";
   return `<div class="source-card" data-source="${source}">
     <div class="icon">${m.icon}</div>
     <div class="name">${m.name}</div>
@@ -82,6 +90,7 @@ export async function renderHome() {
   const cards = [];
   if (sources.opencode && sources.opencode.found) cards.push(sourceCardHtml("opencode", sources.opencode));
   if (sources.cursor && sources.cursor.found) cards.push(sourceCardHtml("cursor", sources.cursor));
+  if (sources.claude && sources.claude.found) cards.push(sourceCardHtml("claude", sources.claude));
   cards.push(addCardHtml()); // always present; max 3 cards total
   el.innerHTML = cards.join("");
   el.querySelectorAll(".source-card[data-source]").forEach((c) =>

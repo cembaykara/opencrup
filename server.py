@@ -346,9 +346,14 @@ def detect_sources():
     agent = Path.home() / ".cursor"
     cur_found = agent.is_dir() or _cursor_appdata_dir().is_dir()
     cur_count = sum(1 for _ in _iter_cursor_transcripts()) if cur_found else 0
+    # claude code (~/.claude/projects, or $CLAUDE_CONFIG_DIR/projects)
+    claude_dir = _claude_projects_dir()
+    claude_found = claude_dir.is_dir()
+    claude_count = sum(1 for _ in _iter_claude_transcripts()) if claude_found else 0
     return {
         "opencode": {"found": oc_found, "path": str(DB_PATH), "count": oc_count},
         "cursor": {"found": cur_found, "path": str(cursor_projects_dir()), "count": cur_count},
+        "claude": {"found": claude_found, "path": str(claude_dir), "count": claude_count},
     }
 
 
@@ -1609,6 +1614,196 @@ def cursor_get_session(sid):
     }
 
 
+# ---------------------------------------------------------------------------
+# Claude Code source (~/.claude/projects/<slug>/<sessionId>.jsonl)
+# ---------------------------------------------------------------------------
+_CLAUDE_CACHE = {}   # (path, mtime) -> parsed messages
+_CLAUDE_CWD = {}     # slug -> real project path (cwd)
+
+
+def _claude_projects_dir():
+    """Claude Code projects dir: $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects."""
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = Path(env).expanduser() if env else Path.home() / ".claude"
+    return base / "projects"
+
+
+def _claude_transcript_path(slug, uuid):
+    return _claude_projects_dir() / slug / f"{uuid}.jsonl"
+
+
+def _iter_claude_transcripts():
+    d = _claude_projects_dir()
+    if not d.is_dir():
+        return
+    for proj in sorted(d.iterdir()):
+        if not proj.is_dir():
+            continue
+        for f in proj.iterdir():
+            if f.is_file() and f.suffix == ".jsonl":
+                yield proj.name, f.stem, f
+
+
+def _claude_real_path(slug, path=None):
+    """Real project path (cwd) for a Claude Code slug, read from the transcript."""
+    if slug in _CLAUDE_CWD:
+        return _CLAUDE_CWD[slug]
+    cwd = None
+    if path is not None:
+        try:
+            with open(path, errors="replace") as fh:
+                first = fh.readline().strip()
+            if first:
+                cwd = json.loads(first).get("cwd")
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+    if not cwd:
+        cwd = "/" + slug.lstrip("-").replace("-", "/")  # lossy fallback
+    _CLAUDE_CWD[slug] = cwd
+    return cwd
+
+
+def _claude_ts(iso):
+    if not iso:
+        return 0
+    try:
+        return int(datetime.datetime.fromisoformat(str(iso).replace("Z", "+00:00")).timestamp() * 1000)
+    except (ValueError, AttributeError, OSError):
+        return 0
+
+
+def _parse_claude_transcript(path):
+    """Parse a Claude Code .jsonl transcript into the unified message shape."""
+    key = (str(path), path.stat().st_mtime)
+    cached = _CLAUDE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    messages = []
+    try:
+        raw = path.read_text(errors="replace")
+    except OSError:
+        return []
+    for i, line in enumerate(raw.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        role = obj.get("type") or (obj.get("message") or {}).get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = (obj.get("message") or {}).get("content") or []
+        ts = _claude_ts(obj.get("timestamp"))
+        if role == "user":
+            if isinstance(content, str):
+                text = content
+            else:
+                blocks = [c for c in content if isinstance(c, dict)]
+                if blocks and all(c.get("type") == "tool_result" for c in blocks):
+                    continue  # tool-output line, not a user prompt
+                text = "".join(c.get("text", "") for c in blocks if c.get("type") == "text")
+            if not text.strip():
+                continue
+            messages.append({"id": str(i), "type": "user", "time_created": ts,
+                             "data": {"text": text}})
+        else:
+            out = []
+            if isinstance(content, str):
+                out.append({"type": "text", "text": content})
+            else:
+                for c in content:
+                    if not isinstance(c, dict):
+                        continue
+                    t = c.get("type")
+                    if t == "text":
+                        out.append({"type": "text", "text": c.get("text", "")})
+                    elif t == "tool_use":
+                        out.append({"type": "tool", "name": c.get("name", "tool"),
+                                    "state": {"status": "completed", "input": c.get("input"), "content": []}})
+                    elif t in ("thinking", "reasoning"):
+                        out.append({"type": "reasoning", "text": c.get("thinking") or c.get("text", "")})
+            if out:
+                messages.append({"id": str(i), "type": "assistant", "time_created": ts,
+                                 "data": {"content": out}})
+    _CLAUDE_CACHE[key] = messages
+    return messages
+
+
+def _claude_title(path):
+    for m in _parse_claude_transcript(path):
+        if m["type"] == "user" and m["data"].get("text"):
+            return m["data"]["text"].split("\n")[0][:80]
+    return "Untitled conversation"
+
+
+def claude_projects():
+    counts, paths = {}, {}
+    for slug, _uuid, path in _iter_claude_transcripts():
+        counts[slug] = counts.get(slug, 0) + 1
+        paths.setdefault(slug, path)
+    out = [{"id": slug, "worktree": _claude_real_path(slug, paths[slug]), "session_count": n}
+           for slug, n in counts.items()]
+    out.sort(key=lambda p: p["worktree"])
+    return out
+
+
+def claude_sessions(project=None, q=None, include_archived=False, limit="200"):
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 200
+    rows = []
+    for slug, uuid, path in _iter_claude_transcripts():
+        if project and slug != project:
+            continue
+        mtime = int(path.stat().st_mtime * 1000)
+        msgs = _parse_claude_transcript(path)
+        rows.append({
+            "id": f"{slug}::{uuid}",
+            "title": _claude_title(path),
+            "directory": _claude_real_path(slug, path),
+            "project": slug,
+            "time_created": mtime,
+            "time_updated": mtime,
+            "time_archived": None,
+            "agent": None,
+            "model": None,
+            "message_count": len(msgs),
+            "local": True,
+        })
+    if q:
+        like = q.lower()
+        rows = [r for r in rows
+                if like in r["title"].lower()
+                or like in r["directory"].lower()
+                or like in r["id"].lower()]
+    rows.sort(key=lambda r: r["time_updated"], reverse=True)
+    return rows[:limit]
+
+
+def claude_get_session(sid):
+    slug, uuid = sid.split("::", 1)
+    path = _claude_transcript_path(slug, uuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    mtime = int(path.stat().st_mtime * 1000)
+    return {
+        "id": sid,
+        "title": _claude_title(path),
+        "directory": _claude_real_path(slug, path),
+        "project": slug,
+        "time_created": mtime,
+        "time_updated": mtime,
+        "time_archived": None,
+        "agent": None,
+        "model": None,
+        "local": True,
+        "messages": _parse_claude_transcript(path),
+    }
+
+
 def _opencode_default_model(conn):
     """Return the model object (dict) the real opencode app last used, as a
     fallback for moved-in sessions. Cursor transcripts carry no model, but the
@@ -2064,6 +2259,29 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json(404, {"error": "not found"})
         return self._send_json(405, {"error": "method not allowed"})
 
+    def _handle_claude(self, method, path, qs):
+        if method == "GET":
+            if path == "/api/claude/env":
+                return self._send_json(200, {
+                    "home": str(Path.home()),
+                    "dir": str(_claude_projects_dir()),
+                    "count": sum(1 for _ in _iter_claude_transcripts()),
+                })
+            if path == "/api/claude/projects":
+                return self._send_json(200, claude_projects())
+            if path == "/api/claude/sessions":
+                return self._send_json(200, claude_sessions(
+                    project=qs.get("project", [None])[0],
+                    q=qs.get("q", [None])[0],
+                    include_archived=qs.get("archived", ["0"])[0] == "1",
+                    limit=qs.get("limit", ["200"])[0],
+                ))
+            m = re.match(r"^/api/claude/sessions/([^/]+)$", path)
+            if m:
+                return self._send_json(200, claude_get_session(unquote(m.group(1))))
+            return self._send_json(404, {"error": "not found"})
+        return self._send_json(405, {"error": "method not allowed"})
+
     def _handle(self, method):
         url = urlparse(self.path)
         path = url.path
@@ -2073,6 +2291,9 @@ class Handler(BaseHTTPRequestHandler):
             # (not the return value) so we never fall through to opencode routing.
             if path.startswith("/api/cursor"):
                 self._handle_cursor(method, path, qs)
+                return
+            if path.startswith("/api/claude"):
+                self._handle_claude(method, path, qs)
                 return
             with closing(connect()) as conn:
                 if method == "GET":

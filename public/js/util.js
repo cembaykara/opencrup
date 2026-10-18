@@ -76,12 +76,12 @@ export async function api(path, opts = {}) {
 }
 
 // source-aware API base + path builders
-const API_BASE = { opencode: "/api", cursor: "/api/cursor" };
+const API_BASE = { opencode: "/api", cursor: "/api/cursor", claude: "/api/claude" };
 export function base() { return API_BASE[state.source] || "/api"; }
 export function sessionsUrl(params) {
   const p = new URLSearchParams();
   if (params.q) p.set("q", params.q);
-  if (params.project) p.set(state.source === "cursor" ? "project" : "project_id", params.project);
+  if (params.project) p.set(state.source === "opencode" ? "project_id" : "project", params.project);
   if (params.archived) p.set("archived", "1");
   return `${base()}/sessions?${p}`;
 }
