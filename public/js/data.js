@@ -1,6 +1,7 @@
 import { state } from "./state.js";
 import { $, api, base, tilde, escapeHtml, sessionsUrl, listLoadingHtml } from "./util.js";
 import { renderSessionList } from "./list.js";
+import { updateHitNav } from "./detail.js";
 
 // ---------------------------------------------------------------------------
 // loading
@@ -81,6 +82,7 @@ export async function loadSessions() {
   for (const id of [...state.selected]) if (!visible.has(id)) state.selected.delete(id);
   if (state.selectAnchor && !visible.has(state.selectAnchor)) state.selectAnchor = null;
   renderSessionList();
+  updateHitNav(); // the open detail's hit stepper tracks the (re)loaded hits
 }
 
 export async function refreshAll() {

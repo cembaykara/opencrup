@@ -16,19 +16,130 @@ export async function selectSession(id, jumpTo) {
   try {
     state.detail = await api(`${base()}/sessions/${encodeURIComponent(id)}`);
     renderDetail();
-    if (jumpTo) {
-      // search hit: scroll to the exact message and flash it
-      const el = document.getElementById(`msg-${jumpTo}`);
-      if (el) {
-        el.scrollIntoView({ block: "center" });
-        el.classList.add("hit-flash");
-        setTimeout(() => el.classList.remove("hit-flash"), 2500);
-      }
+    // search-hit navigation: highlight the word, show the stepper, jump to a hit
+    const s = state.sessions.find((x) => x.id === id);
+    const hits = (s && s.search_hits) || [];
+    if (hits.length) {
+      highlightSearchWords();
+      showHitNav();
+      gotoHit(jumpTo ? hits.indexOf(jumpTo) : 0);
+    } else {
+      hideHitNav();
     }
   } catch (err) {
     detailEl.innerHTML = errorHtml(err.message);
   }
 }
+
+// ---------------------------------------------------------------------------
+// search-hit stepper: [^] [v] N/M — walks the session's matched messages
+// ---------------------------------------------------------------------------
+let hitIndex = -1;
+
+function currentHits() {
+  const s = state.sessions.find((x) => x.id === state.selectedId);
+  return (s && s.search_hits) || [];
+}
+
+function showHitNav() {
+  if ($("#hit-nav")) return;
+  const nav = document.createElement("div");
+  nav.id = "hit-nav";
+  nav.className = "hit-nav";
+  nav.innerHTML = `
+    <button class="btn small icon-btn" id="hit-prev" title="Previous match (also Up arrow)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+    </button>
+    <span class="hit-count" id="hit-count">1/1</span>
+    <button class="btn small icon-btn" id="hit-next" title="Next match (also Down arrow)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
+    <button class="btn small icon-btn" id="hit-close" title="Close (Esc)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>`;
+  nav.querySelector("#hit-prev").addEventListener("click", () => gotoHit(hitIndex - 1));
+  nav.querySelector("#hit-next").addEventListener("click", () => gotoHit(hitIndex + 1));
+  nav.querySelector("#hit-close").addEventListener("click", hideHitNav);
+  detailEl.prepend(nav);
+}
+
+function hideHitNav() {
+  const nav = $("#hit-nav");
+  if (nav) nav.remove();
+  hitIndex = -1;
+}
+
+function gotoHit(i) {
+  const hits = currentHits();
+  if (!hits.length) { hideHitNav(); return; }
+  hitIndex = ((i % hits.length) + hits.length) % hits.length;
+  const el = document.getElementById(`msg-${hits[hitIndex]}`);
+  if (el) {
+    el.scrollIntoView({ block: "center" });
+    el.classList.remove("hit-flash");
+    void el.offsetWidth; // restart the flash animation
+    el.classList.add("hit-flash");
+  }
+  detailEl.querySelectorAll("mark.hl.current").forEach((m) => m.classList.remove("current"));
+  const cur = el && el.querySelector("mark.hl");
+  if (cur) cur.classList.add("current");
+  const count = $("#hit-count");
+  if (count) count.textContent = `${hitIndex + 1}/${hits.length}`;
+}
+
+// Re-evaluate the stepper after the list (and its search_hits) reloads.
+export function updateHitNav() {
+  if (!state.detail) { hideHitNav(); return; }
+  const hits = currentHits();
+  if (!hits.length) { hideHitNav(); return; }
+  if (hitIndex >= hits.length) hitIndex = hits.length - 1;
+  showHitNav();
+  const count = $("#hit-count");
+  if (count) count.textContent = `${hitIndex + 1}/${hits.length}`;
+}
+
+// Wrap every occurrence of the search word in the detail in <mark class="hl">.
+function highlightSearchWords() {
+  const q = $("#f-search").value.trim();
+  if (!q) return;
+  detailEl.querySelectorAll(".msg").forEach((el) => highlightIn(el, q));
+}
+
+function highlightIn(root, query) {
+  const q = query.toLowerCase();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue.toLowerCase().includes(q)) nodes.push(walker.currentNode);
+  }
+  for (const node of nodes) {
+    const text = node.nodeValue;
+    const lower = text.toLowerCase();
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let i = lower.indexOf(q);
+    while (i !== -1) {
+      frag.appendChild(document.createTextNode(text.slice(last, i)));
+      const mark = document.createElement("mark");
+      mark.className = "hl";
+      mark.textContent = text.slice(i, i + q.length);
+      frag.appendChild(mark);
+      last = i + q.length;
+      i = lower.indexOf(q, last);
+    }
+    frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  }
+}
+
+// Arrow keys walk the hits while the stepper is open; Esc closes it.
+document.addEventListener("keydown", (e) => {
+  if (!$("#hit-nav")) return;
+  if (e.key === "Escape") { hideHitNav(); return; }
+  if (e.target.closest("input, textarea")) return;
+  if (e.key === "ArrowUp") { e.preventDefault(); gotoHit(hitIndex - 1); }
+  if (e.key === "ArrowDown") { e.preventDefault(); gotoHit(hitIndex + 1); }
+});
 
 // <option> list for the project dropdown: every known project, plus the
 // session's current directory if it has no project row yet
