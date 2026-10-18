@@ -1797,6 +1797,22 @@ def _cursor_header_chats(include_archived=False):
     return out
 
 
+def _cursor_header_exists(uuid):
+    """True when the 3.x listing table still has a row for this composer."""
+    db = _cursor_global_db()
+    if not db.is_file():
+        return False
+    try:
+        c = sqlite3.connect(str(db), timeout=10)
+        n = c.execute(
+            "select count(*) from composerHeaders where composerId = ?",
+            (uuid,)).fetchone()[0]
+        c.close()
+    except sqlite3.Error:
+        return False
+    return n > 0
+
+
 def cursor_projects():
     counts = {}
     for slug, _uuid, _path in _iter_cursor_transcripts():
@@ -2691,6 +2707,12 @@ def _cursor_purge_stores(slug, uuid):
                                (f"composerData:{uuid}",)).rowcount
                 n += c.execute("delete from cursorDiskKV where key like ?",
                                (f"bubbleId:{uuid}:%",)).rowcount
+                # per-chat working keys (checkpoints, diffs) — orphaned
+                # chats keep these even after the composer record is gone
+                for prefix in ("checkpointId:", "codeBlockDiff:",
+                               "codeBlockPartialInlineDiffFates:"):
+                    n += c.execute("delete from cursorDiskKV where key like ?",
+                                   (f"{prefix}{uuid}:%",)).rowcount
                 # the 3.x listing table — the row that keeps it visible
                 has_headers = c.execute(
                     "select count(*) from sqlite_master"
@@ -2714,6 +2736,7 @@ def _cursor_purge_stores(slug, uuid):
         for wdb in ws_root.glob("*/state.vscdb"):
             try:
                 c = sqlite3.connect(str(wdb), timeout=15)
+                touched = False
                 row = c.execute(
                     "SELECT value FROM ItemTable WHERE key='composer.composerData'"
                 ).fetchone()
@@ -2728,6 +2751,7 @@ def _cursor_purge_stores(slug, uuid):
                                 data[key] = [x for x in data[key] if x != uuid]
                         c.execute("UPDATE ItemTable SET value=? WHERE key='composer.composerData'",
                                   (json.dumps(data),))
+                        touched = True
                 n = 0
                 try:
                     n = c.execute("delete from composerHeaders where composerId = ?",
@@ -2736,7 +2760,7 @@ def _cursor_purge_stores(slug, uuid):
                     n = 0
                 c.commit()
                 c.close()
-                if row or n:
+                if touched or n:
                     removed.append("workspace list")
                     continue
             except (sqlite3.Error, json.JSONDecodeError, OSError):
@@ -2768,7 +2792,9 @@ def _cursor_purge_stores(slug, uuid):
 def cursor_delete_session(sid):
     slug, uuid = sid.split("::", 1)
     path = _cursor_transcript_path(slug, uuid)
-    if not path.is_file():
+    # header-only (3.x-native / orphaned) chats have no transcript but are
+    # still listed from composerHeaders — deleting purges the header + keys
+    if not path.is_file() and not _cursor_header_exists(uuid):
         raise HttpError(404, "conversation not found")
     removed = _cursor_purge_stores(slug, uuid)
     return {"deleted": sid, "stores": removed}
@@ -2792,6 +2818,10 @@ def cursor_bulk_sessions(body):
         slug, uuid = sid.split("::", 1)
         path = _cursor_transcript_path(slug, uuid)
         if not path.is_file():
+            # header-only chat: only deletable (archive markers need a transcript)
+            if action == "delete" and _cursor_header_exists(uuid):
+                _cursor_purge_stores(slug, uuid)
+                done.append(sid)
             continue
         if action == "delete":
             _cursor_purge_stores(slug, uuid)
