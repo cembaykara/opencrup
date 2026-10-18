@@ -86,7 +86,7 @@ export function sessionsUrl(params) {
   return `${base()}/sessions?${p}`;
 }
 export function messageUrl(mid) {
-  if (state.source === "cursor")
+  if (state.source === "cursor" || state.source === "claude")
     return `${base()}/sessions/${encodeURIComponent(state.detail.id)}/messages/${encodeURIComponent(mid)}`;
   return `${base()}/messages/${encodeURIComponent(mid)}`;
 }

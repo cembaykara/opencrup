@@ -1732,6 +1732,13 @@ def _parse_claude_transcript(path):
 
 
 def _claude_title(path):
+    # a renamed title is stored in a .title sidecar (Claude Code has no title file)
+    try:
+        t = (path.parent / f"{path.stem}.title").read_text().strip()
+        if t:
+            return t
+    except OSError:
+        pass
     for m in _parse_claude_transcript(path):
         if m["type"] == "user" and m["data"].get("text"):
             return m["data"]["text"].split("\n")[0][:80]
@@ -1749,6 +1756,11 @@ def claude_projects():
     return out
 
 
+def _claude_archived_ts(path, uuid):
+    marker = path.parent / f"{uuid}.archived"
+    return int(marker.stat().st_mtime * 1000) if marker.is_file() else None
+
+
 def claude_sessions(project=None, q=None, include_archived=False, limit="200"):
     try:
         limit = int(limit)
@@ -1759,6 +1771,9 @@ def claude_sessions(project=None, q=None, include_archived=False, limit="200"):
         if project and slug != project:
             continue
         mtime = int(path.stat().st_mtime * 1000)
+        archived_ts = _claude_archived_ts(path, uuid)
+        if not include_archived and archived_ts:
+            continue
         msgs = _parse_claude_transcript(path)
         rows.append({
             "id": f"{slug}::{uuid}",
@@ -1767,7 +1782,7 @@ def claude_sessions(project=None, q=None, include_archived=False, limit="200"):
             "project": slug,
             "time_created": mtime,
             "time_updated": mtime,
-            "time_archived": None,
+            "time_archived": archived_ts,
             "agent": None,
             "model": None,
             "message_count": len(msgs),
@@ -1796,12 +1811,97 @@ def claude_get_session(sid):
         "project": slug,
         "time_created": mtime,
         "time_updated": mtime,
-        "time_archived": None,
+        "time_archived": _claude_archived_ts(path, uuid),
         "agent": None,
         "model": None,
         "local": True,
         "messages": _parse_claude_transcript(path),
     }
+
+
+def claude_update_session(sid, patch):
+    """Rename (via a .title sidecar) and/or archive (via a .archived marker)."""
+    slug, uuid = sid.split("::", 1)
+    path = _claude_transcript_path(slug, uuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    if "title" in patch:
+        (path.parent / f"{uuid}.title").write_text(str(patch["title"]))
+    if "archived" in patch:
+        marker = path.parent / f"{uuid}.archived"
+        if patch["archived"]:
+            marker.write_text("")
+        elif marker.is_file():
+            marker.unlink()
+    _CLAUDE_CACHE.clear()
+    return claude_get_session(sid)
+
+
+def claude_delete_session(sid):
+    """Purge a Claude Code conversation: the only store is the .jsonl transcript
+    (the session list comes from scanning the transcript dirs), so unlinking it
+    removes it from the real app too."""
+    slug, uuid = sid.split("::", 1)
+    path = _claude_transcript_path(slug, uuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    path.unlink(missing_ok=True)
+    for ext in (".title", ".archived"):
+        (path.parent / f"{uuid}{ext}").unlink(missing_ok=True)
+    _CLAUDE_CACHE.clear()
+    return {"deleted": sid}
+
+
+def _claude_rewrite_lines(path, lines):
+    path.write_text("\n".join(lines) + "\n")
+    _CLAUDE_CACHE.clear()
+
+
+def claude_update_message(sid, mid, patch):
+    """Edit a message's text. `mid` is the 0-based line number in the .jsonl."""
+    slug, uuid = sid.split("::", 1)
+    path = _claude_transcript_path(slug, uuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    lines = path.read_text(errors="replace").splitlines()
+    try:
+        idx = int(mid)
+    except (TypeError, ValueError):
+        raise HttpError(400, "bad message id")
+    if idx >= len(lines) or not lines[idx].strip():
+        raise HttpError(404, "message not found")
+    obj = json.loads(lines[idx])
+    msg = obj.get("message") or {}
+    content = msg.get("content")
+    text = patch.get("text")
+    if obj.get("type") == "user" and isinstance(content, str):
+        msg["content"] = text
+    elif isinstance(content, list):
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "text":
+                c["text"] = text
+                break
+    lines[idx] = json.dumps(obj)
+    _claude_rewrite_lines(path, lines)
+    return claude_get_session(sid)
+
+
+def claude_delete_message(sid, mid):
+    """Remove a message (line) from the .jsonl transcript."""
+    slug, uuid = sid.split("::", 1)
+    path = _claude_transcript_path(slug, uuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    lines = path.read_text(errors="replace").splitlines()
+    try:
+        idx = int(mid)
+    except (TypeError, ValueError):
+        raise HttpError(400, "bad message id")
+    if idx >= len(lines) or not lines[idx].strip():
+        raise HttpError(404, "message not found")
+    del lines[idx]
+    _claude_rewrite_lines(path, lines)
+    return claude_get_session(sid)
 
 
 def move_claude_to_opencode(conn, sid, directory, delete_original=False):
@@ -2563,6 +2663,24 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(200, move_claude_to_cursor(
                         conn, sid, body.get("directory"),
                         bool(body.get("delete_original"))))
+            return self._send_json(404, {"error": "not found"})
+        if method == "PATCH":
+            body = self._read_body()
+            m = re.match(r"^/api/claude/sessions/([^/]+)/messages/([^/]+)$", path)
+            if m:
+                return self._send_json(200, claude_update_message(
+                    unquote(m.group(1)), unquote(m.group(2)), body))
+            m = re.match(r"^/api/claude/sessions/([^/]+)$", path)
+            if m:
+                return self._send_json(200, claude_update_session(unquote(m.group(1)), body))
+            return self._send_json(404, {"error": "not found"})
+        if method == "DELETE":
+            m = re.match(r"^/api/claude/sessions/([^/]+)/messages/([^/]+)$", path)
+            if m:
+                return self._send_json(200, claude_delete_message(unquote(m.group(1)), unquote(m.group(2))))
+            m = re.match(r"^/api/claude/sessions/([^/]+)$", path)
+            if m:
+                return self._send_json(200, claude_delete_session(unquote(m.group(1))))
             return self._send_json(404, {"error": "not found"})
         return self._send_json(405, {"error": "method not allowed"})
 

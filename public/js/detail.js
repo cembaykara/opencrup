@@ -384,9 +384,10 @@ export async function toggleArchive() {
 
 export async function deleteSession() {
   const s = state.detail;
-  const isCursor = state.source === "cursor";
-  const msg = isCursor
+  const msg = state.source === "cursor"
     ? `Delete "${s.title || s.id}"?\n\nThis purges the conversation from EVERY Cursor store:\n\n• transcript (.jsonl)\n• store.db (encrypted reasoning)\n• search index\n• cloud-sync copy\n• UI state\n• telemetry\n\nThis cannot be undone.`
+    : state.source === "claude"
+    ? `Delete "${s.title || s.id}"?\n\nThis removes the Claude Code transcript (.jsonl). The conversation will no longer appear in claude --resume. This cannot be undone.`
     : `Delete session "${s.title || s.id}"?\n\nThis removes the session and all its messages from the opencode database. This cannot be undone.`;
   if (!confirm(msg)) return;
   try {
