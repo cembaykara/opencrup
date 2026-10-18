@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { $, detailEl, api, toast, selectPromptHtml } from "./util.js";
+import { $, detailEl, api, toast, selectPromptHtml, saveView, clearView } from "./util.js";
 import { refreshAll } from "./data.js";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +18,7 @@ export function resetViewerState() {
 export function showHome() {
   state.source = null;
   resetViewerState();
+  clearView(); // going back: don't restore this view on refresh
   $("#viewer").classList.add("hidden");
   $("#home").classList.remove("hidden");
 }
@@ -26,6 +27,7 @@ export async function showViewer(source, account) {
   state.source = source;
   resetViewerState();
   state.account = (source === "claude" && account) ? account : "default";
+  saveView({ source, account: state.account });
   $("#home").classList.add("hidden");
   $("#viewer").classList.remove("hidden");
   $("#app-logo").innerHTML = 'Open<span>Crup</span>';

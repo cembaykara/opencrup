@@ -75,6 +75,19 @@ export function toast(msg, type = "ok") {
   toast._t = setTimeout(() => (el.className = ""), 2500);
 }
 
+// View persistence: remember which viewer (and session) was open so a
+// refresh lands back where you were. Cleared when the user goes Home.
+const VIEW_KEY = "opencrup.view";
+export function saveView(view) {
+  try { localStorage.setItem(VIEW_KEY, JSON.stringify(view)); } catch {}
+}
+export function loadView() {
+  try { return JSON.parse(localStorage.getItem(VIEW_KEY) || "null"); } catch { return null; }
+}
+export function clearView() {
+  try { localStorage.removeItem(VIEW_KEY); } catch {}
+}
+
 export async function api(path, opts = {}) {
   // Claude supports multiple accounts; thread the active one through as ?account=
   if (state.source === "claude" && state.account && state.account !== "default") {

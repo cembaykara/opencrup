@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { $, api, toast } from "./util.js";
+import { $, api, toast, loadView } from "./util.js";
 import { loadSessions, renderFilterMenu, closeFilterMenu, refreshAll } from "./data.js";
 import { renderSessionList, bulkAction, clearSelection } from "./list.js";
 import { showHome, renderHome, showViewer } from "./nav.js";
@@ -69,5 +69,12 @@ $("main").addEventListener("click", (e) => {
     await showViewer(src, params.get("account"));
     const sid = params.get("session");
     if (sid) selectSession(sid);
+  } else {
+    // no deep link: restore the last open view (cleared when the user goes Home)
+    const saved = loadView();
+    if (saved && ["opencode", "cursor", "claude"].includes(saved.source)) {
+      await showViewer(saved.source, saved.account);
+      if (saved.selectedId) selectSession(saved.selectedId);
+    }
   }
 })();

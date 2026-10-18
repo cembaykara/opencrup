@@ -1,5 +1,5 @@
 import { state } from "./state.js";
-import { $, detailEl, escapeHtml, md, fmtTime, shortModel, tilde, toast, api, base, messageUrl, selectPromptHtml, loadingHtml, errorHtml } from "./util.js";
+import { $, detailEl, escapeHtml, md, fmtTime, shortModel, tilde, toast, api, base, messageUrl, selectPromptHtml, loadingHtml, errorHtml, saveView } from "./util.js";
 import { renderSessionList } from "./list.js";
 import { loadSessions } from "./data.js";
 import { showViewer } from "./nav.js";
@@ -10,6 +10,7 @@ import { showViewer } from "./nav.js";
 export async function selectSession(id) {
   state.selectedId = id;
   state.selectAnchor = id; // the opened row is the "latest selected" (shift-click anchor)
+  saveView({ source: state.source, account: state.account, selectedId: id });
   renderSessionList();
   detailEl.innerHTML = loadingHtml();
   try {
