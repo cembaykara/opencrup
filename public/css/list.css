@@ -9,6 +9,10 @@
   left: auto; right: 0; transform: none;
 }
 
+/* search-hit rows: accent edge + badge */
+.session-item.hit { border-left-color: var(--accent); }
+.badge.hit { color: var(--accent); border-color: rgba(88, 166, 255, .4); }
+
 /* spinner shown in the list while sessions are loading (slow sources) */
 .list-loading {
   display: flex; align-items: center; justify-content: center;

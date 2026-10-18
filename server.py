@@ -174,27 +174,31 @@ def list_projects(conn):
 # ---------------------------------------------------------------------------
 # API: sessions
 # ---------------------------------------------------------------------------
-def _messages_search_text(msgs):
-    """Lowercased full text of unified messages: user text, assistant
-    text/reasoning, tool names + inputs. Used for full-text search."""
+def _message_search_text(m):
+    """Lowercased searchable text of one unified message: user text,
+    assistant text/reasoning, tool names + inputs."""
     parts = []
-    for m in msgs:
-        d = m.get("data") or {}
-        if m.get("type") == "user":
-            parts.append(d.get("text") or "")
-        else:
-            for c in d.get("content") or []:
-                if not isinstance(c, dict):
-                    continue
-                t = c.get("type")
-                if t in ("text", "reasoning"):
-                    parts.append(c.get("text") or "")
-                elif t == "tool":
-                    parts.append(c.get("name") or "")
-                    inp = (c.get("state") or {}).get("input")
-                    if inp:
-                        parts.append(inp if isinstance(inp, str) else json.dumps(inp))
+    d = m.get("data") or {}
+    if m.get("type") == "user":
+        parts.append(d.get("text") or "")
+    else:
+        for c in d.get("content") or []:
+            if not isinstance(c, dict):
+                continue
+            t = c.get("type")
+            if t in ("text", "reasoning"):
+                parts.append(c.get("text") or "")
+            elif t == "tool":
+                parts.append(c.get("name") or "")
+                inp = (c.get("state") or {}).get("input")
+                if inp:
+                    parts.append(inp if isinstance(inp, str) else json.dumps(inp))
     return " ".join(parts).lower()
+
+
+def _messages_search_text(msgs):
+    """Lowercased full text of unified messages (full-text search)."""
+    return " ".join(_message_search_text(m) for m in msgs)
 
 
 def list_sessions(conn, project_id=None, q=None, include_archived=False, limit="200"):
@@ -229,7 +233,17 @@ def list_sessions(conn, project_id=None, q=None, include_archived=False, limit="
             LIMIT ?""",
         params,
     )
-    return [dict(r) for r in cur.fetchall()]
+    rows = [dict(r) for r in cur.fetchall()]
+    if q:
+        # which messages matched, so the UI can jump to the first hit
+        like = f"%{q}%"
+        for r in rows:
+            hits = [row[0] for row in conn.execute(
+                "SELECT id FROM session_message WHERE session_id = ? AND data LIKE ?",
+                (r["id"], like)).fetchall()]
+            if hits:
+                r["search_hits"] = hits
+    return rows
 
 
 def get_session(conn, sid):
@@ -1883,15 +1897,21 @@ def cursor_sessions(project=None, q=None, include_archived=False, limit="200"):
             "local": True,
         }
         if q:
-            row["_search"] = _messages_search_text(msgs)
+            like = q.lower()
+            texts = [_message_search_text(m) for m in msgs]
+            row["_search"] = " ".join(texts)
+            row["_hits"] = [m["id"] for m, t in zip(msgs, texts) if like in t]
         rows.append(row)
     # chats the app lists from composerHeaders without a local transcript
     for chat in _cursor_header_chats(include_archived=include_archived):
         if project and chat["project"] != project:
             continue
         if q:
-            chat["_search"] = _messages_search_text(
-                _cursor_blob_messages(chat["id"].split("::", 1)[1]))
+            msgs = _cursor_blob_messages(chat["id"].split("::", 1)[1])
+            like = q.lower()
+            texts = [_message_search_text(m) for m in msgs]
+            chat["_search"] = " ".join(texts)
+            chat["_hits"] = [m["id"] for m, t in zip(msgs, texts) if like in t]
         rows.append(chat)
     if q:
         like = q.lower()
@@ -1902,6 +1922,10 @@ def cursor_sessions(project=None, q=None, include_archived=False, limit="200"):
                 or like in r.get("_search", "")]
         for r in rows:
             r.pop("_search", None)
+            if r.get("_hits"):
+                r["search_hits"] = r.pop("_hits")
+            else:
+                r.pop("_hits", None)
     rows.sort(key=lambda r: r["time_updated"], reverse=True)
     return rows[:limit]
 
@@ -2172,7 +2196,10 @@ def claude_sessions(project=None, q=None, include_archived=False, limit="200"):
             "local": True,
         }
         if q:
-            row["_search"] = _messages_search_text(msgs)
+            like = q.lower()
+            texts = [_message_search_text(m) for m in msgs]
+            row["_search"] = " ".join(texts)
+            row["_hits"] = [m["id"] for m, t in zip(msgs, texts) if like in t]
         rows.append(row)
     if q:
         like = q.lower()
@@ -2183,6 +2210,10 @@ def claude_sessions(project=None, q=None, include_archived=False, limit="200"):
                 or like in r.get("_search", "")]
         for r in rows:
             r.pop("_search", None)
+            if r.get("_hits"):
+                r["search_hits"] = r.pop("_hits")
+            else:
+                r.pop("_hits", None)
     rows.sort(key=lambda r: r["time_updated"], reverse=True)
     return rows[:limit]
 

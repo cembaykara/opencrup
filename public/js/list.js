@@ -60,7 +60,9 @@ export function renderSessionList() {
         e.preventDefault();
         rangeSelect(node.dataset.id);
       } else {
-        clickItem(node.dataset.id);
+        // a search hit opens the conversation and jumps to the first match
+        const s = state.sessions.find((x) => x.id === node.dataset.id);
+        clickItem(node.dataset.id, s && s.search_hits && s.search_hits[0]);
       }
     })
   );
@@ -73,10 +75,12 @@ export function renderSessionList() {
 function sessionItemHtml(s) {
   const title = s.title || s.slug || s.id;
   const model = shortModel(s.model);
+  const hits = (s.search_hits && s.search_hits.length) || 0;
   const cls = [
     "session-item",
     s.id === state.selectAnchor ? "active" : "",
     state.selected.has(s.id) ? "selected" : "",
+    hits ? "hit" : "",
   ].filter(Boolean).join(" ");
   return `
     <div class="${cls}" data-id="${s.id}">
@@ -86,6 +90,7 @@ function sessionItemHtml(s) {
           <span>${relTime(s.time_updated)}</span>
           <span>·</span>
           <span>${s.message_count} msg</span>
+          ${hits ? `<span class="badge hit" data-tip="search match in ${hits} message${hits > 1 ? "s" : ""} — click to jump to the first">match${hits > 1 ? "s" : ""} ×${hits}</span>` : ""}
           ${s.agent ? `<span class="badge agent">${escapeHtml(s.agent)}</span>` : ""}
           ${model ? `<span class="badge model">${escapeHtml(model)}</span>` : ""}
           ${s.content_state === "orphaned" ? `<span class="badge orphan" data-tip="Header only — content is cloud-only or evicted by Cursor">no local content</span>` : ""}
@@ -113,10 +118,11 @@ export function toggleSelect(id, on) {
 }
 
 // Plain click: select only this row (clears the rest) and open it.
-export function clickItem(id) {
+// jumpTo (a message id) scrolls the detail to that message and flashes it.
+export function clickItem(id, jumpTo) {
   state.selected.clear();
   state.selected.add(id);
-  selectSession(id);
+  selectSession(id, jumpTo);
 }
 
 // Shift-click: select the inclusive span between the anchor row and this row,

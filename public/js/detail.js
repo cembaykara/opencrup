@@ -7,7 +7,7 @@ import { showViewer } from "./nav.js";
 // ---------------------------------------------------------------------------
 // session detail
 // ---------------------------------------------------------------------------
-export async function selectSession(id) {
+export async function selectSession(id, jumpTo) {
   state.selectedId = id;
   state.selectAnchor = id; // the opened row is the "latest selected" (shift-click anchor)
   saveView({ source: state.source, account: state.account, selectedId: id });
@@ -16,6 +16,15 @@ export async function selectSession(id) {
   try {
     state.detail = await api(`${base()}/sessions/${encodeURIComponent(id)}`);
     renderDetail();
+    if (jumpTo) {
+      // search hit: scroll to the exact message and flash it
+      const el = document.getElementById(`msg-${jumpTo}`);
+      if (el) {
+        el.scrollIntoView({ block: "center" });
+        el.classList.add("hit-flash");
+        setTimeout(() => el.classList.remove("hit-flash"), 2500);
+      }
+    }
   } catch (err) {
     detailEl.innerHTML = errorHtml(err.message);
   }
