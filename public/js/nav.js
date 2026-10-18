@@ -138,7 +138,7 @@ export function addSource() {
       <div class="field">
         <label>Projects path</label>
         <div class="path-row">
-          <input id="add-path" readonly placeholder="choose a folder…">
+          <input id="add-path" placeholder="choose a folder, or paste a path">
           <button class="btn small" id="add-pick">Choose…</button>
         </div>
       </div>

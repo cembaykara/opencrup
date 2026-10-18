@@ -281,7 +281,7 @@ def _scan_roots():
     """
     if platform.system() != "Windows":
         return [str(Path.home())]
-    roots = []
+    roots = [str(Path.home())]  # home first: projects usually live here
     try:
         import ctypes
         mask = ctypes.windll.kernel32.GetLogicalDrives()
@@ -295,7 +295,7 @@ def _scan_roots():
                     pass
     except Exception:
         pass
-    return roots or [str(Path.home())]
+    return roots
 
 
 def _immediate_children(path, limit=200):
@@ -317,8 +317,8 @@ def resolve_dir(name, children=None):
     want = set(children or [])
     prune = _scan_prune()
     matches = []  # (score, depth, path)
-    seen = 0
     for root in _scan_roots():
+        seen = 0  # per-root budget so one huge drive can't starve the others
         for dirpath, dirnames, _ in os.walk(root, topdown=True):
             dirnames[:] = [d for d in dirnames if d not in prune]
             if os.path.basename(dirpath) == name:
@@ -332,8 +332,6 @@ def resolve_dir(name, children=None):
             seen += 1
             if seen > 200000:
                 break
-        if seen > 200000:
-            break
     if not matches:
         return None
     matches.sort(key=lambda m: (-m[0], m[1]))
