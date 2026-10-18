@@ -2,7 +2,7 @@
 """Purge Cursor conversation(s) from every local store.
 
 Usage:
-  python3 purge_cursor.py <uuid-or-prefix> [...] [--dry-run]
+  python3 scripts/purge_cursor.py <uuid-or-prefix> [...] [--dry-run]
 
 Accepts full UUIDs or unique prefixes. Resolves them against the search DB
 and the filesystem, then removes each from:

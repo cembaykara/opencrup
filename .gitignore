@@ -1,5 +1,4 @@
-server.log
-mock.log
 __pycache__/
+*.log
 .DS_Store
 AGENTS.md

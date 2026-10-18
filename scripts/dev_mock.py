@@ -7,8 +7,8 @@ server pointed at it on a separate port, so you can demo the opencode view
 without exposing your real data.
 
 Usage:
-    python3 dev_mock.py            # served on http://127.0.0.1:4322
-    python3 dev_mock.py -p 5000    # custom port
+    python3 scripts/dev_mock.py            # served on http://127.0.0.1:4322
+    python3 scripts/dev_mock.py -p 5000    # custom port
 """
 import os
 import sys
@@ -18,7 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 
-BASE = Path(__file__).resolve().parent
+BASE = Path(__file__).resolve().parent.parent  # repo root (server.py lives there)
 PORT = 4322
 for i, a in enumerate(sys.argv):
     if a == "-p" and i + 1 < len(sys.argv):
