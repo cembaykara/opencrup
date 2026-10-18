@@ -83,6 +83,14 @@ def cursor_projects_dir():
         return Path(cfg["cursor_projects"])
     return CURSOR_PROJECTS_DIR
 
+
+def opencode_db_path():
+    """Effective opencode DB: saved override > env > default."""
+    cfg = _load_config()
+    if cfg.get("opencode_db"):
+        return Path(cfg["opencode_db"])
+    return DB_PATH
+
 B62 = string.ascii_lowercase + string.ascii_uppercase + string.digits
 ADJ = ["clever", "cosmic", "mighty", "neon", "eager", "brave", "silent", "rapid",
        "lucky", "crimson", "amber", "frosty", "wild", "quiet", "solar", "lunar"]
@@ -139,7 +147,7 @@ OPENCODE_VERSION = detect_version()
 
 
 def connect():
-    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn = sqlite3.connect(opencode_db_path(), timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -334,7 +342,8 @@ def resolve_dir(name, children=None):
 def detect_sources():
     """Presence + location + count for each source, for the home screen."""
     # opencode
-    oc_found = DB_PATH.is_file()
+    oc_path = opencode_db_path()
+    oc_found = oc_path.is_file()
     oc_count = 0
     if oc_found:
         try:
@@ -351,26 +360,50 @@ def detect_sources():
     claude_found = claude_dir.is_dir()
     claude_count = sum(1 for _ in _iter_claude_transcripts()) if claude_found else 0
     return {
-        "opencode": {"found": oc_found, "path": str(DB_PATH), "count": oc_count},
+        "opencode": {"found": oc_found, "path": str(oc_path), "count": oc_count},
         "cursor": {"found": cur_found, "path": str(cursor_projects_dir()), "count": cur_count},
         "claude": {"found": claude_found, "path": str(claude_dir), "count": claude_count},
     }
 
 
-def add_cursor_source(path):
-    """Save a manually-picked Cursor location (from the home "+" button)."""
+def add_source(app, path):
+    """Add/override a source location (home "+" button). Scans the path to
+    confirm it holds the app's data — if it can't figure it out, the app is
+    left out (error). Persists the override so it survives restarts."""
+    if not isinstance(path, str) or not path:
+        raise HttpError(400, "path is required")
     p = Path(path).expanduser()
-    if (p / "projects").is_dir():
-        projects = p / "projects"  # picked the agent dir (~/.cursor)
-    elif p.is_dir() and any(c.is_dir() and (c / "agent-transcripts").is_dir() for c in p.iterdir()):
-        projects = p  # picked the projects dir directly
-    else:
-        projects = p / "projects"  # best guess
     cfg = _load_config()
-    cfg["cursor_projects"] = str(projects)
-    _save_config(cfg)
-    _CURSOR_CACHE.clear()
-    return detect_sources()["cursor"]
+    if app == "cursor":
+        if (p / "projects").is_dir():
+            projects = p / "projects"  # picked the agent dir (~/.cursor)
+        elif p.is_dir() and any(c.is_dir() and (c / "agent-transcripts").is_dir() for c in p.iterdir()):
+            projects = p  # picked the projects dir directly
+        else:
+            raise HttpError(400, "no Cursor data found at that path")
+        cfg["cursor_projects"] = str(projects)
+        _save_config(cfg)
+        _CURSOR_CACHE.clear()
+    elif app == "claude":
+        cand = p / "projects"
+        has_cc = lambda d: d.is_dir() and any(
+            c.is_dir() and any(f.suffix == ".jsonl" for f in c.iterdir()) for c in d.iterdir())
+        if not has_cc(cand):
+            cand = p
+        if not has_cc(cand):
+            raise HttpError(400, "no Claude Code data found at that path")
+        cfg["claude_projects"] = str(cand)
+        _save_config(cfg)
+        _CLAUDE_CACHE.clear(); _CLAUDE_CWD.clear()
+    elif app == "opencode":
+        db = p if p.suffix == ".db" else (p / "opencode.db")
+        if not db.is_file():
+            raise HttpError(400, "no opencode database found at that path")
+        cfg["opencode_db"] = str(db)
+        _save_config(cfg)
+    else:
+        raise HttpError(400, "unknown source")
+    return detect_sources()[app]
 
 
 def create_session(conn, body):
@@ -1622,7 +1655,10 @@ _CLAUDE_CWD = {}     # slug -> real project path (cwd)
 
 
 def _claude_projects_dir():
-    """Claude Code projects dir: $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects."""
+    """Claude Code projects dir: saved override > $CLAUDE_CONFIG_DIR/projects > ~/.claude/projects."""
+    cfg = _load_config()
+    if cfg.get("claude_projects"):
+        return Path(cfg["claude_projects"])
     env = os.environ.get("CLAUDE_CONFIG_DIR")
     base = Path(env).expanduser() if env else Path.home() / ".claude"
     return base / "projects"
@@ -2744,8 +2780,10 @@ class Handler(BaseHTTPRequestHandler):
                     if path == "/api/resolve-dir":
                         return self._send_json(200, {"path": resolve_dir(
                             body.get("name"), body.get("children"))})
-                    if path == "/api/sources/cursor":
-                        return self._send_json(200, add_cursor_source(body.get("path", "")))
+                    if path == "/api/sources/add":
+                        return self._send_json(200, add_source(body.get("app"), body.get("path")))
+                    if path == "/api/sources/cursor":  # legacy
+                        return self._send_json(200, add_source("cursor", body.get("path", "")))
                     m = re.match(r"^/api/sessions/([^/]+)/move-to-(cursor|claude)$", path)
                     if m:
                         if m.group(2) == "cursor":

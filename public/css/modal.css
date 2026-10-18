@@ -14,3 +14,6 @@
 .modal .modal-sub { margin: -6px 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .modal .field label.check { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; margin-bottom: 0; cursor: pointer; }
 .modal .field label.check input { width: auto; }
+.modal .path-row { display: flex; gap: 8px; }
+.modal .path-row input { flex: 1; min-width: 0; }
+.modal .path-row .btn { white-space: nowrap; }
