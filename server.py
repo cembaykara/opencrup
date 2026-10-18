@@ -1804,6 +1804,127 @@ def claude_get_session(sid):
     }
 
 
+def move_claude_to_opencode(conn, sid, directory, delete_original=False):
+    """Copy a Claude Code .jsonl transcript into the opencode DB as a session.
+
+    Mirrors move_cursor_to_opencode: parses the transcript into the unified
+    message shape, creates a session_v2 row (under the given project directory)
+    and one session_message row per turn, normalized to the exact shape the
+    real opencode app decodes (non-null model, time.completed, well-formed tool
+    content) so the conversation loads in the app, not just in OpenCrup.
+    """
+    if not isinstance(directory, str) or not directory:
+        raise HttpError(400, "directory is required")
+    slug, uuid = sid.split("::", 1)
+    path = _claude_transcript_path(slug, uuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    msgs = _parse_claude_transcript(path)
+    now = now_ms()
+    project_id = resolve_project(conn, directory)
+    model = _opencode_default_model(conn)
+    new_sid = "ses_" + rand_base62(26)
+    conn.execute(
+        """INSERT INTO session_v2
+           (id, project_id, slug, directory, title, version, agent, model, time_created, time_updated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (new_sid, project_id, random_slug(), directory, _claude_title(path),
+         OPENCODE_VERSION, "build",
+         json.dumps(model) if model else None, now, now),
+    )
+    for i, m in enumerate(msgs):
+        d = m["data"]
+        if m["type"] == "user":
+            data = {"time": {"created": now}, "text": d.get("text", ""), "files": [], "agents": []}
+        else:
+            content = []
+            for idx, c in enumerate(d.get("content") or []):
+                if c.get("type") == "tool":
+                    content.append(_opencode_tool_content(c, idx, now))
+                else:
+                    content.append(c)
+            data = {"time": {"created": now, "completed": now + 1}, "agent": "build",
+                    "model": model, "content": content}
+        conn.execute(
+            """INSERT INTO session_message
+               (id, session_id, type, seq, time_created, time_updated, data)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            ("msg_" + rand_base62(26), new_sid, m["type"], i + 1, now, now, json.dumps(data)),
+        )
+    conn.commit()
+    if delete_original:
+        path.unlink(missing_ok=True)
+    return {"id": new_sid, "directory": directory}
+
+
+def move_claude_to_cursor(conn, sid, directory, delete_original=False):
+    """Copy a Claude Code .jsonl transcript into a Cursor project.
+
+    Mirrors move_opencode_to_cursor: parses the transcript into the unified
+    message shape, converts each turn to Cursor's line format (user -> text;
+    assistant -> text/reasoning/tool_use) and writes
+    <projects>/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl, then registers it
+    in Cursor's search index so the real app lists + renders it.
+    """
+    if not isinstance(directory, str) or not directory:
+        raise HttpError(400, "directory is required")
+    claude_slug, claude_uuid = sid.split("::", 1)  # `uuid` is also a module; don't shadow it
+    path = _claude_transcript_path(claude_slug, claude_uuid)
+    if not path.is_file():
+        raise HttpError(404, "conversation not found")
+    msgs = _parse_claude_transcript(path)
+    lines = []
+    for m in msgs:
+        d = m["data"]
+        if m["type"] == "user":
+            lines.append({"role": "user", "message": {"content": [
+                {"type": "text", "text": d.get("text", "")}]}})
+        else:
+            content = []
+            for c in (d.get("content") or []):
+                if not isinstance(c, dict):
+                    continue
+                t = c.get("type")
+                if t == "text":
+                    content.append({"type": "text", "text": c.get("text", "")})
+                elif t == "reasoning":
+                    content.append({"type": "reasoning", "text": c.get("text", "")})
+                elif t == "tool":
+                    state = c.get("state") or {}
+                    content.append({"type": "tool_use", "name": c.get("name", "tool"),
+                                    "input": state.get("input")})
+            lines.append({"role": "assistant", "message": {"content": content}})
+    cslug = _resolve_cursor_slug(directory)
+    cuuid = str(uuid.uuid4())  # dashed UUID, matching Cursor's own transcript ids
+    tdir = cursor_projects_dir() / cslug / "agent-transcripts" / cuuid
+    tdir.mkdir(parents=True, exist_ok=True)
+    raw = "\n".join(json.dumps(l) for l in lines) + "\n"
+    (tdir / f"{cuuid}.jsonl").write_text(raw)
+    # remember the real path so the project shows a clean label, not the raw slug
+    try:
+        (cursor_projects_dir() / cslug / ".opencrup-path").write_text(directory)
+    except OSError:
+        pass
+    title = ""
+    for l in lines:
+        if l["role"] != "user":
+            continue
+        for c in l["message"]["content"]:
+            if isinstance(c, dict) and c.get("type") == "text" and c.get("text"):
+                title = c["text"].strip()
+                break
+        if title:
+            break
+    body = " ".join(c.get("text", "") for l in lines for c in l["message"]["content"]
+                    if isinstance(c, dict) and c.get("type") == "text")
+    _register_cursor_conversation(cuuid, title[:80], body, lines,
+                                  directory, int(time.time() * 1000))
+    _CURSOR_CACHE.clear()
+    if delete_original:
+        path.unlink(missing_ok=True)
+    return {"id": f"{cslug}::{cuuid}", "slug": cslug, "uuid": cuuid, "directory": directory}
+
+
 def _opencode_default_model(conn):
     """Return the model object (dict) the real opencode app last used, as a
     fallback for moved-in sessions. Cursor transcripts carry no model, but the
@@ -2279,6 +2400,20 @@ class Handler(BaseHTTPRequestHandler):
             m = re.match(r"^/api/claude/sessions/([^/]+)$", path)
             if m:
                 return self._send_json(200, claude_get_session(unquote(m.group(1))))
+            return self._send_json(404, {"error": "not found"})
+        if method == "POST":
+            body = self._read_body()
+            m = re.match(r"^/api/claude/sessions/([^/]+)/move-to-(opencode|cursor)$", path)
+            if m:
+                sid = unquote(m.group(1))
+                with closing(connect()) as conn:
+                    if m.group(2) == "opencode":
+                        return self._send_json(200, move_claude_to_opencode(
+                            conn, sid, body.get("directory"),
+                            bool(body.get("delete_original"))))
+                    return self._send_json(200, move_claude_to_cursor(
+                        conn, sid, body.get("directory"),
+                        bool(body.get("delete_original"))))
             return self._send_json(404, {"error": "not found"})
         return self._send_json(405, {"error": "method not allowed"})
 

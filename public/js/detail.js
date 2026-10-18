@@ -61,7 +61,7 @@ export function renderDetail() {
           <button class="btn small" id="btn-edit-title">Rename<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
           <button class="btn small" id="btn-archive">${s.time_archived ? "Unarchive" : "Archive"}</button>
           <button class="btn small" id="btn-export">Export JSON</button>
-          <button class="btn small" id="btn-move" title="Copy this conversation to the other source">${state.source === "opencode" ? "Move to Cursor" : "Move to opencode"}</button>
+          <button class="btn small" id="btn-move" title="Copy this conversation to another source">${state.source === "opencode" ? "Move to Cursor" : state.source === "cursor" ? "Move to opencode" : "Move…"}</button>
           <button class="btn small danger" id="btn-delete">Delete<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>
         </div>
       </div>
@@ -109,36 +109,41 @@ export async function moveSessionTo(sessionId, directory) {
 // target project folder + whether to delete the original, then converts and
 // jumps to the new conversation in the other source.
 export async function openMoveModal(sessionId, currentDir) {
-  const target = state.source === "opencode" ? "cursor" : "opencode";
-  const targetLabel = target === "cursor" ? "Cursor" : "opencode";
+  // opencode/cursor have a single fixed target; claude can move to either.
+  const fixedTarget = state.source === "opencode" ? "cursor"
+    : state.source === "cursor" ? "opencode" : null;
+  let target = fixedTarget;
+  const label = (t) => (t === "cursor" ? "Cursor" : "opencode");
 
   // Existing projects in the target source — the move lands in one of these.
-  // Fetch by target (not the current view), so cursor -> opencode lists
-  // opencode's projects even while the Cursor view is active.
-  let options = [];
-  try {
-    const projs = target === "cursor"
-      ? await api("/api/cursor/projects")
-      : await api("/api/projects");
-    options = projs.map((p) => p.worktree);
-  } catch (e) { /* best-effort */ }
-  // Default to the source's own path (preserve it); add it if not already listed.
-  if (currentDir && !options.includes(currentDir)) options.unshift(currentDir);
+  // Fetch by target (not the current view), so a move lists the destination's
+  // projects even while another source's view is active.
+  const fetchOptions = async (t) => {
+    let opts = [];
+    try {
+      const projs = t === "cursor" ? await api("/api/cursor/projects") : await api("/api/projects");
+      opts = projs.map((p) => p.worktree);
+    } catch { /* best-effort */ }
+    if (currentDir && !opts.includes(currentDir)) opts.unshift(currentDir); // preserve source path
+    return opts;
+  };
 
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop";
   backdrop.innerHTML = `
     <div class="modal">
-      <h2>Move to ${targetLabel}</h2>
-      <p class="modal-sub">Copies this conversation into an existing ${targetLabel} project as a new conversation. Tool output and model info may not carry over.</p>
+      <h2 id="mv-title">Move…</h2>
+      <p class="modal-sub" id="mv-sub"></p>
+      ${fixedTarget ? "" : `<div class="field">
+        <label>Target source</label>
+        <select id="mv-target">
+          <option value="opencode">opencode</option>
+          <option value="cursor">Cursor</option>
+        </select>
+      </div>`}
       <div class="field">
         <label>Target project</label>
-        ${options.length
-          ? `<select id="mv-dir">
-               ${options.map((d) => `<option value="${escapeHtml(d)}"${d === currentDir ? " selected" : ""}>${escapeHtml(tilde(d))}</option>`).join("")}
-             </select>`
-          : `<input id="mv-dir" value="${escapeHtml(currentDir || "")}" disabled>
-             <p class="modal-sub">No ${targetLabel} projects found yet.</p>`}
+        <div id="mv-dir-wrap"></div>
       </div>
       <div class="field">
         <label class="check"><input type="checkbox" id="mv-delete"> Delete the original</label>
@@ -154,6 +159,21 @@ export async function openMoveModal(sessionId, currentDir) {
   backdrop.querySelector("#mv-cancel").addEventListener("click", close);
   backdrop.addEventListener("click", (e) => { if (e.target === backdrop) close(); });
 
+  const renderDir = async (t) => {
+    target = t;
+    backdrop.querySelector("#mv-title").textContent = `Move to ${label(t)}`;
+    backdrop.querySelector("#mv-sub").textContent =
+      `Copies this conversation into an existing ${label(t)} project as a new conversation. Tool output and model info may not carry over.`;
+    const opts = await fetchOptions(t);
+    backdrop.querySelector("#mv-dir-wrap").innerHTML = opts.length
+      ? `<select id="mv-dir">${opts.map((d) => `<option value="${escapeHtml(d)}"${d === currentDir ? " selected" : ""}>${escapeHtml(tilde(d))}</option>`).join("")}</select>`
+      : `<input id="mv-dir" value="${escapeHtml(currentDir || "")}" disabled><p class="modal-sub">No ${label(t)} projects found yet.</p>`;
+  };
+
+  const targetSel = backdrop.querySelector("#mv-target");
+  if (targetSel) targetSel.addEventListener("change", () => renderDir(targetSel.value));
+  await renderDir(target || "opencode");
+
   backdrop.querySelector("#mv-go").addEventListener("click", async () => {
     const directory = backdrop.querySelector("#mv-dir").value.trim();
     const del = backdrop.querySelector("#mv-delete").checked;
@@ -161,12 +181,10 @@ export async function openMoveModal(sessionId, currentDir) {
     const btn = backdrop.querySelector("#mv-go");
     btn.disabled = true; btn.textContent = "Moving…";
     try {
-      const url = target === "cursor"
-        ? `${base()}/sessions/${encodeURIComponent(sessionId)}/move-to-cursor`
-        : `${base()}/sessions/${encodeURIComponent(sessionId)}/move-to-opencode`;
+      const url = `${base()}/sessions/${encodeURIComponent(sessionId)}/move-to-${target}`;
       const res = await api(url, { method: "POST", body: { directory, delete_original: del } });
       close();
-      toast(`moved to ${targetLabel}`);
+      toast(`moved to ${label(target)}`);
       await showViewer(target);   // switches source + reloads the list
       selectSession(res.id);      // opens the new conversation
     } catch (err) { toast(err.message, "error"); btn.disabled = false; btn.textContent = "Move"; }
