@@ -12,6 +12,7 @@ Environment:
     HOST         bind address (default 127.0.0.1)
     OPENCODE_DB  database path (default ~/.local/share/opencode/opencode.db)
 """
+import datetime
 import hashlib
 import json
 import os
@@ -497,75 +498,320 @@ def _decode_folder_uri(folder):
     return Path(path)
 
 
+def _cursor_workspaces():
+    """Every Cursor workspace: hash-dir name -> (state.vscdb Path, folder Path).
+
+    The hash dir under workspaceStorage is the workspace id the app keys
+    chats by (see the composerHeaders table).
+    """
+    out = {}
+    ws_root = _cursor_appdata_dir() / "User" / "workspaceStorage"
+    if not ws_root.is_dir():
+        return out
+    for wj in ws_root.glob("*/workspace.json"):
+        try:
+            d = json.loads(wj.read_text())
+        except (OSError, ValueError):
+            continue
+        folder = d.get("folder") or d.get("workspace") or ""
+        cand = _decode_folder_uri(folder)
+        if cand is None:
+            continue
+        out[wj.parent.name] = (wj.parent / "state.vscdb", cand)
+    return out
+
+
 def _cursor_workspace_db(directory):
     """Find the workspace state.vscdb for a project directory.
 
     Cursor keys each workspace by a hash; workspace.json holds the folder URI.
     Returns the state.vscdb Path, or None if the project has no workspace yet
-    (in which case the conversation still lands in the global store).
+    (in which case the chat registers under the app's 'empty-window' bucket).
     """
-    ws_root = _cursor_appdata_dir() / "User" / "workspaceStorage"
-    if not ws_root.is_dir():
-        return None
-    target = Path(directory).expanduser().resolve()
-    # Windows paths are case-insensitive and the folder URI is a file:// URL
-    # (file:///c%3A/Users/x/proj), so compare decoded, resolved forms
+    target = Path(directory).expanduser()
+    try:
+        target = target.resolve()
+    except OSError:
+        pass
+    # Windows paths are case-insensitive, so compare decoded, resolved forms
     # case-insensitively there; elsewhere a plain resolved comparison works.
     win = platform.system() == "Windows"
     norm = (lambda p: str(p).lower()) if win else (lambda p: str(p))
     target_n = norm(target)
-    for wj in ws_root.glob("*/workspace.json"):
+    for _ws_id, (db, folder) in _cursor_workspaces().items():
+        if norm(folder) == target_n:
+            return db
         try:
-            folder = json.loads(wj.read_text()).get("folder", "")
-        except (OSError, ValueError):
+            if norm(folder.resolve()) == target_n:
+                return db
+        except OSError:
             continue
-        cand = _decode_folder_uri(folder)
-        if cand is None:
-            continue
-        if norm(cand) == target_n or norm(cand.resolve()) == target_n:
-            return wj.parent / "state.vscdb"
     return None
 
 
-def _cursor_composer_defaults(cuuid, title, headers, now_ms):
-    """A full composer record matching the fields Cursor's deserializer expects.
+def _cursor_workspace_id(directory):
+    """The workspace id (storage hash) a chat registers under for `directory`,
+    or the app's 'empty-window' bucket when the folder was never opened in Cursor."""
+    target = Path(directory).expanduser()
+    try:
+        target = target.resolve()
+    except OSError:
+        pass
+    win = platform.system() == "Windows"
+    norm = (lambda p: str(p).lower()) if win else (lambda p: str(p))
+    target_n = norm(target)
+    for ws_id, (_db, folder) in _cursor_workspaces().items():
+        if norm(folder) == target_n:
+            return ws_id
+        try:
+            if norm(folder.resolve()) == target_n:
+                return ws_id
+        except OSError:
+            continue
+    return "empty-window"
 
-    Missing fields make `load()` reject the composer (it opens a blank chat
-    instead). Mirrors the shape of a real agent-mode composer.
+
+def _cursor_uri_obj(directory):
+    """The VS Code-style URI object ($mid:1 shape) the app uses to name a folder.
+
+    On Windows the drive letter is lowercased in every form, matching what the
+    app itself stores (path '/c:/Users/...', fsPath 'c:\\Users\\...',
+    external 'file:///c%3A/Users/...').
     """
+    p = str(Path(directory).expanduser())
+    try:
+        p = str(Path(p).resolve())
+    except OSError:
+        pass
+    win = platform.system() == "Windows"
+    if win and len(p) >= 2 and p[1] == ":":
+        drive = p[0].lower()
+        slash = drive + ":" + p[2:].replace("\\", "/").replace(" ", "%20")
+        fs = p[0].lower() + p[1:]
+        path = "/" + drive + ":" + p[2:].replace("\\", "/")
+        ext = "file:///" + drive + "%3A" + p[2:].replace("\\", "/").replace(" ", "%20")
+    else:
+        slash = p.replace("\\", "/")
+        fs = slash
+        path = slash
+        ext = "file://" + slash
+    return {"$mid": 1, "fsPath": fs, "_sep": 1 if win else 2,
+            "external": ext, "path": path, "scheme": "file"}
+
+
+def _iso_ms(ms):
+    """epoch millis -> the ISO string ('2026-10-17T23:45:11.308Z') the app stores."""
+    dt = datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
+
+
+def _cursor_composer_defaults(cuuid, title, headers, now_ms, ws_id, uri):
+    """A full composer record in the shape the installed app expects (_v: 18 on
+    Cursor 3.x; the field set mirrors a real agent-mode composer exactly).
+
+    Older records are rejected by the deserializer and the chat opens blank,
+    so every field a real record carries is present here. Chat-specific
+    ciphertext (conversationState, blob keys) is omitted — the app treats a
+    missing conversation state as 'nothing to decrypt'.
+    """
+    mentions = {}
+    for k in ("composers", "selectedCommits", "selectedPullRequests",
+              "selectedImages", "folderSelections", "fileSelections",
+              "terminalFiles", "selections", "terminalSelections",
+              "selectedDocs", "externalLinks", "cursorRules", "cursorCommands",
+              "subagentSelections", "browserSelections"):
+        mentions[k] = {}
+    for k in ("gitDiff", "gitDiffFromBranchToMain", "diffHistory",
+              "uiElementSelections", "consoleLogs", "ideEditorsState"):
+        mentions[k] = []
+    lists = ["composers", "selectedCommits", "selectedPullRequests",
+             "selectedImages", "selectedDocuments", "selectedVideos",
+             "folderSelections", "fileSelections", "selections",
+             "terminalSelections", "selectedDocs", "externalLinks",
+             "cursorRules", "cursorCommands", "gitPRDiffSelections",
+             "subagentSelections", "browserSelections", "extraContext"]
+    context = {k: [] for k in lists}
+    context["mentions"] = mentions
     return {
-        "_v": 3,
+        "_v": 18,
         "composerId": cuuid,
-        "name": title,
-        "richText": title,
-        "text": title,
+        "richText": "",
+        "hasLoaded": True,
+        "text": "",
         "fullConversationHeadersOnly": headers,
         "conversationMap": {},
         "status": "completed",
-        "createdAt": now_ms,
-        "lastUpdatedAt": now_ms,
-        "unifiedMode": "agent",
-        "forceMode": "agent",
-        "isAgentic": True,
-        "hasLoaded": True,
-        "allAttachedFileCodeChunksUris": [],
-        "capabilities": [],
-        "codeBlockData": {},
-        "codebaseSearchSettings": {},
-        "context": {},
+        "context": context,
         "generatingBubbleIds": [],
-        "gitGraphFileSuggestions": [],
-        "hasChangedContext": False,
-        "isFileListExpanded": False,
-        "isReadingLongFile": False,
-        "latestChatGenerationUUID": None,
-        "latestConversationSummary": None,
+        "codeBlockData": {},
+        "originalFileStates": {},
         "newlyCreatedFiles": [],
         "newlyCreatedFolders": [],
-        "originalModelLines": [],
-        "subComposerIds": [],
+        "lastUpdatedAt": now_ms,
+        "conversationCheckpointLastUpdatedAt": now_ms,
+        "createdAt": now_ms,
+        "hasChangedContext": False,
+        "capabilities": [
+            {"type": 15, "data": {"bubbleDataMap": "{}"}},
+            {"type": 19, "data": {}},
+            {"type": 33, "data": {}},
+            {"type": 32, "data": {}},
+            {"type": 23, "data": {}},
+            {"type": 16, "data": {}},
+            {"type": 24, "data": {}},
+        ],
+        "name": title,
+        "isFileListExpanded": False,
+        "canvasPillCollapsed": False,
+        "browserChipManuallyDisabled": False,
+        "browserChipManuallyEnabled": False,
+        "unifiedMode": "agent",
+        "activeCustomMode": None,
+        "committedCustomMode": None,
+        "pendingExitedCustomMode": None,
+        "forceMode": "agent",
         "usageData": {},
+        "contextUsagePercent": 0,
+        "contextTokensUsed": 0,
+        "contextTokenLimit": 256000,
+        "allAttachedFileCodeChunksUris": [],
+        "subComposerIds": [],
+        "subagentComposerIds": [],
+        "capabilityContexts": [],
+        "todos": [],
+        "isQueueExpanded": True,
+        "hasUnreadMessages": False,
+        "lastReadAtMs": now_ms,
+        "gitHubPromptDismissed": False,
+        "totalLinesAdded": 0,
+        "totalLinesRemoved": 0,
+        "addedFiles": 0,
+        "removedFiles": 0,
+        "isDraft": False,
+        "isCreatingWorktree": False,
+        "isApplyingWorktree": False,
+        "isUndoingWorktree": False,
+        "applied": False,
+        "pendingCreateWorktree": False,
+        "worktreeStartedReadOnly": False,
+        "isBestOfNSubcomposer": False,
+        "isBestOfNParent": False,
+        "isSpec": False,
+        "isProject": False,
+        "isSpecSubagentDone": False,
+        "isContinuationInProgress": False,
+        "stopHookLoopCount": 0,
+        "trackedGitRepos": [],
+        "isNAL": True,
+        "planModeSuggestionUsed": False,
+        "debugModeSuggestionUsed": False,
+        "latestChatGenerationUUID": None,
+        "isAgentic": True,
+        "subtitle": title,
+        "workspaceIdentifier": {"id": ws_id, "uri": uri},
+        "queueItems": [],
     }
+
+
+def _cursor_head_record(cuuid, title, now_ms, ws_id, uri):
+    """The 'head' summary the composerHeaders store holds per chat (3.x).
+
+    Mirrors a real head exactly: the app's list view renders name/subtitle/
+    times from this row, and `agentLocation` tells it where the chat's local
+    data lives. The row is the gate: without it the app never lists the chat.
+    """
+    env = {"id": ws_id, "uri": uri}
+    return {
+        "type": "head",
+        "composerId": cuuid,
+        "name": title,
+        "lastUpdatedAt": now_ms,
+        "conversationCheckpointLastUpdatedAt": now_ms,
+        "createdAt": now_ms,
+        "unifiedMode": "agent",
+        "forceMode": "agent",
+        "hasUnreadMessages": False,
+        "contextUsagePercent": 0,
+        "totalLinesAdded": 0,
+        "totalLinesRemoved": 0,
+        "subtitle": title,
+        "hasBlockingPendingActions": False,
+        "hasPendingPlan": False,
+        "isDraft": False,
+        "isWorktree": False,
+        "worktreeStartedReadOnly": False,
+        "isSpec": False,
+        "isProject": False,
+        "isBestOfNSubcomposer": False,
+        "numSubComposers": 0,
+        "referencedPlans": [],
+        "trackedGitRepos": [],
+        "workspaceIdentifier": {"id": ws_id, "uri": uri},
+        "agentLocation": {"type": "local", "environment": env, "status": "active"},
+        "agentLocationHistory": [{
+            "id": str(uuid.uuid4()),
+            "timestamp": now_ms,
+            "destination": {"type": "local"},
+            "location": {"type": "local", "environment": env, "status": "active"},
+            "reason": "created",
+        }],
+    }
+
+
+def _cursor_write_composer_headers(cuuid, title, now_ms, ws_id, uri):
+    """Register the chat in Cursor's composerHeaders store.
+
+    On Cursor 3.x the sidebar and chat history list from the `composerHeaders`
+    table in the global state.vscdb (canonical once the app has migrated; the
+    legacy cursorDiskKV blob is cleared then). On older 2.x installs the heads
+    live in the `composer.composerHeaders` KV blob instead, so fall back to
+    appending there when the table does not exist. Best-effort: returns False
+    when nothing was written (e.g. the app data dir is absent or locked).
+    """
+    gs = _cursor_appdata_dir() / "User" / "globalStorage"
+    state_db = gs / "state.vscdb"
+    if not state_db.is_file():
+        return False
+    head = _cursor_head_record(cuuid, title, now_ms, ws_id, uri)
+    try:
+        c = sqlite3.connect(str(state_db), timeout=15)
+        has_table = c.execute(
+            "SELECT count(*) FROM sqlite_master "
+            "WHERE type='table' AND name='composerHeaders'").fetchone()[0]
+        if has_table:
+            c.execute(
+                "INSERT INTO composerHeaders "
+                "(composerId, workspaceId, createdAt, lastUpdatedAt, isArchived,"
+                " isSubagent, recency, checkpointAt, subagentTypeName, value)"
+                " VALUES (?,?,?,?,0,0,?,?,?,?)"
+                " ON CONFLICT(composerId) DO UPDATE SET"
+                " workspaceId=excluded.workspaceId, lastUpdatedAt=excluded.lastUpdatedAt,"
+                " recency=excluded.recency, value=excluded.value",
+                (cuuid, ws_id, now_ms, now_ms, now_ms, now_ms, "",
+                 json.dumps(head)))
+        else:
+            row = c.execute(
+                "SELECT value FROM cursorDiskKV"
+                " WHERE key='composer.composerHeaders'").fetchone()
+            heads = []
+            if row:
+                try:
+                    parsed = json.loads(row[0])
+                    if isinstance(parsed, list):
+                        heads = parsed
+                except (ValueError, TypeError):
+                    heads = []
+            heads = [h for h in heads
+                     if not (isinstance(h, dict)
+                             and h.get("composerId") == cuuid)]
+            heads.append(head)
+            c.execute("INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
+                      ("composer.composerHeaders", json.dumps(heads)))
+        c.commit()
+        c.close()
+        return True
+    except sqlite3.Error:
+        return False
 
 
 def _cursor_tool_case(name):
@@ -585,30 +831,36 @@ def _cursor_tool_case(name):
 def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
     """Make a moved-in transcript show in the *real* Cursor app.
 
-    Four stores, all required for the conversation to list AND load:
-      1. Composer store (globalStorage/state.vscdb, cursorDiskKV,
-         `composerData:<uuid>`) — full composer record; the reconciliation
-         reads it to compute the root_fingerprint.
-      2. Message bubbles (same table, `bubbleId:<uuid>:<bubbleId>`) — the
-         actual message bodies, one per header. Without these the composer
-         lists but opens blank.
-      3. Workspace allComposers (workspaceStorage/<hash>/state.vscdb,
-         ItemTable `composer.composerData`) — the sidebar lists from here.
-      4. Search index (conversation-search.db) — written with the matching
+    Stores, all best-effort, all required on at least one Cursor version:
+      1. composerHeaders (global state.vscdb) — on Cursor 3.x the sidebar and
+         chat history list from this table; without a row the app never shows
+         the chat. On 2.x the heads live in the cursorDiskKV blob instead.
+      2. Composer store (global state.vscdb, cursorDiskKV,
+         `composerData:<uuid>`) — full composer record (_v matches the
+         installed app; wrong version opens a blank chat).
+      3. Message bubbles (same table, `bubbleId:<uuid>:<bubbleId>`) — used by
+         older versions; 3.x renders from the transcript instead.
+      4. Workspace allComposers (workspaceStorage/<hash>/state.vscdb,
+         ItemTable `composer.composerData`) — the 2.x sidebar source; 3.x
+         workspaces keep this empty, so this is legacy compatibility only.
+      5. Search index (conversation-search.db) — written with the matching
          fingerprint for immediate visibility before the next reconcile.
 
     `lines` is the transcript (each line has `role` and `message.content`).
     The real app renders assistant content from the bubble's `text` (visible
     text) and `toolFormerData` (tool use), and gates rendering on the header's
-    `grouping.isRenderable`. Best-effort throughout.
+    `grouping.isRenderable`.
     """
     gs = _cursor_appdata_dir() / "User" / "globalStorage"
+    ws_id = _cursor_workspace_id(directory)
+    uri = _cursor_uri_obj(directory)
 
     # Build headers + bubbles from the transcript. The real app renders
     # assistant content from the bubble's `text` (visible text) and
     # `toolFormerData` (tool use), and gates rendering on the header's
     # `grouping.isRenderable` — a tool-use reply with no `grouping` renders
-    # blank, so both must be populated.
+    # blank, so both must be populated. Timestamps mirror a real header
+    # (ISO createdAt + startedAtMs/completedAtMs).
     headers = []
     bubbles = []  # (bubbleId, bubble_dict)
     for l in lines:
@@ -662,7 +914,10 @@ def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
             })
             if path:
                 grouping["toolDisplayPath"] = path
-        headers.append({"bubbleId": bubble_id, "type": btype, "grouping": grouping})
+        headers.append({"bubbleId": bubble_id, "type": btype,
+                        "createdAt": _iso_ms(now_ms),
+                        "startedAtMs": now_ms, "completedAtMs": now_ms,
+                        "grouping": grouping})
         bubbles.append((bubble_id, bubble))
 
     message_ids = [h["bubbleId"] for h in headers]
@@ -676,7 +931,8 @@ def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
             conn.execute(
                 "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
                 (f"composerData:{cuuid}",
-                 json.dumps(_cursor_composer_defaults(cuuid, title, headers, now_ms))))
+                 json.dumps(_cursor_composer_defaults(
+                     cuuid, title, headers, now_ms, ws_id, uri))))
             for bubble_id, bubble in bubbles:
                 conn.execute(
                     "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
@@ -686,7 +942,8 @@ def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
         except sqlite3.Error:
             pass
 
-    # 3) workspace allComposers — the sidebar lists from here
+    # 3) workspace allComposers — the 2.x sidebar source; 3.x workspaces keep
+    #    this list empty, so this write is legacy compatibility only
     ws_db = _cursor_workspace_db(directory)
     if ws_db is not None and ws_db.is_file():
         try:
@@ -719,7 +976,11 @@ def _register_cursor_conversation(cuuid, title, body, lines, directory, now_ms):
         except sqlite3.Error:
             pass
 
-    # 4) search index — immediate visibility with the matching fingerprint
+    # 5) composerHeaders — on Cursor 3.x this table is the sidebar/history
+    #    listing source; without a row the app never shows the chat at all.
+    _cursor_write_composer_headers(cuuid, title, now_ms, ws_id, uri)
+
+    # (legacy) search index — immediate visibility with the matching fingerprint
     db = gs / "conversation-search.db"
     if not db.is_file():
         return
@@ -779,7 +1040,7 @@ def move_opencode_to_cursor(conn, sid, directory, delete_original=False):
                     content.append({"type": "tool_use", "name": c.get("name", "tool"),
                                     "input": state.get("input")})
             lines.append({"role": "assistant", "message": {"content": content}})
-    slug = _cursor_slug_from_path(directory)
+    slug = _resolve_cursor_slug(directory)
     cuuid = str(uuid.uuid4())  # dashed UUID, matching Cursor's own transcript ids
     tdir = cursor_projects_dir() / slug / "agent-transcripts" / cuuid
     tdir.mkdir(parents=True, exist_ok=True)
@@ -980,20 +1241,15 @@ def _cursor_real_path(slug):
     global _CURSOR_PATHS
     if _CURSOR_PATHS is None:
         _CURSOR_PATHS = {}
-        ws = _cursor_appdata_dir() / "User" / "workspaceStorage"
-        for j in ws.glob("*/workspace.json"):
-            try:
-                d = json.loads(j.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            f = d.get("folder") or d.get("workspace")
-            if not f:
-                continue
-            f = f.replace("file://", "")
-            s = f.lstrip("/").replace("/", "-").replace(".", "-").replace("%20", "-").replace(" ", "-")
-            _CURSOR_PATHS.setdefault(s, f)
+        for _ws_id, (_db, folder) in _cursor_workspaces().items():
+            s = _cursor_slug_from_path(str(folder))
+            _CURSOR_PATHS.setdefault(s, str(folder))
+            _CURSOR_PATHS.setdefault(s.lower(), str(folder))
+            _CURSOR_PATHS.setdefault(str(folder), str(folder))
     if slug in _CURSOR_PATHS:
         return _CURSOR_PATHS[slug]
+    if slug.lower() in _CURSOR_PATHS:
+        return _CURSOR_PATHS[slug.lower()]
     # explicit path OpenCrup saved when it moved a transcript into this project
     # (Cursor's own workspace.json only knows projects it has natively opened)
     try:
@@ -1006,11 +1262,43 @@ def _cursor_real_path(slug):
 
 
 def _cursor_slug_from_path(path):
-    """Inverse of the slug formula above: a real folder path -> its Cursor slug."""
+    """A real folder path -> its Cursor project-dir slug.
+
+    Matches the app's own formula (Cursor 3.x): every non-alphanumeric char
+    becomes '-', runs of '-' collapse, and leading/trailing '-' are trimmed.
+    So 'C:\\Users\\x\\proj' slugs to 'C-Users-x-proj' on Windows and
+    '/Users/x/proj' to 'Users-x-proj' elsewhere.
+    """
     p = str(path)
     if p.startswith("file://"):
-        p = p[len("file://"):]
-    return p.lstrip("/").replace("/", "-").replace(".", "-").replace("%20", "-").replace(" ", "-")
+        dec = _decode_folder_uri(p)
+        if dec is not None:
+            p = str(dec)
+    s = re.sub(r"[^A-Za-z0-9]", "-", p)
+    s = re.sub(r"-+", "-", s)
+    return s.strip("-")
+
+
+def _resolve_cursor_slug(directory):
+    """Slug for `directory`, preferring a project dir Cursor (or a prior move)
+    already created — on Windows a case difference ('c-' vs 'C-') would
+    otherwise fork into a second, app-invisible folder."""
+    p = Path(directory).expanduser()
+    try:
+        p = p.resolve()
+    except OSError:
+        pass
+    slug = _cursor_slug_from_path(str(p))
+    base = cursor_projects_dir()
+    if base.is_dir():
+        want = slug.lower()
+        try:
+            for d in base.iterdir():
+                if d.is_dir() and d.name.lower() == want:
+                    return d.name
+        except OSError:
+            pass
+    return slug
 
 
 def cursor_diag():
@@ -1043,7 +1331,17 @@ def cursor_diag():
             tables = {r[0] for r in c.execute(
                 "select name from sqlite_master where type='table'").fetchall()}
             info["state_tables"] = sorted(t for t in tables
-                                          if t in ("cursorDiskKV", "ItemTable"))
+                                          if t in ("cursorDiskKV", "ItemTable",
+                                                   "composerHeaders"))
+            if "composerHeaders" in tables:
+                info["composer_headers"] = {
+                    "rows": c.execute(
+                        "select count(*) from composerHeaders").fetchone()[0],
+                    "canonical": (c.execute(
+                        "select value from cursorDiskKV"
+                        " where key='composer.composerHeaders.migratedToTable'"
+                    ).fetchone() or [None])[0] == "1",
+                }
             # test write: insert + delete a throwaway row, with a busy timeout
             probe = f"opencrup_diag_{secrets.token_hex(4)}"
             c.execute("INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?,?)",
@@ -1061,10 +1359,11 @@ def cursor_diag():
 def cursor_workspace_diag(directory):
     """For a given project directory, show how the workspace match resolves.
 
-    The sidebar lists from the workspace allComposers, so if
-    _cursor_workspace_db(directory) returns None the moved conversation lands
-    in the global store but never in the sidebar. Reports every workspace's
-    folder URI and which (if any) matches the directory."""
+    The chat registers under the matched workspace id (3.x composerHeaders
+    workspaceId, 2.x allComposers store), so if
+    _cursor_workspace_db(directory) returns None it lands in the app's
+    'empty-window' bucket instead of the project's sidebar. Reports every
+    workspace's folder URI and which (if any) matches the directory."""
     ws_root = _cursor_appdata_dir() / "User" / "workspaceStorage"
     target = Path(directory).expanduser().resolve() if directory else None
     win = platform.system() == "Windows"
@@ -1097,9 +1396,10 @@ def cursor_workspace_diag(directory):
 def cursor_composer_diag(uuid):
     """Dump exactly where a moved conversation landed, for a given UUID.
 
-    Reports the global store (composer record + bubble count) and, for every
-    workspace, whether the UUID is in its allComposers (the sidebar source).
-    Lets a Windows user confirm whether the move wrote to the right places."""
+    Reports the global store (composerHeaders row, composer record + bubble
+    count) and, for every workspace, whether the UUID is in its allComposers
+    or local composerHeaders table. Lets a Windows user confirm whether the
+    move wrote to the right places."""
     app_dir = _cursor_appdata_dir()
     state_db = app_dir / "User" / "globalStorage" / "state.vscdb"
     info = {"uuid": uuid, "global": {}, "workspaces": []}
@@ -1112,8 +1412,23 @@ def cursor_composer_diag(uuid):
             nbub = c.execute(
                 "select count(*) from cursorDiskKV where key like ?",
                 (f"bubbleId:{uuid}:%",)).fetchone()[0]
+            header = None
+            try:
+                header = c.execute(
+                    "select workspaceId, value from composerHeaders"
+                    " where composerId = ?", (uuid,)).fetchone()
+            except sqlite3.Error:
+                header = None
             c.close()
-            info["global"] = {"composer": bool(comp), "bubbles": nbub}
+            info["global"] = {
+                "composer": bool(comp),
+                "bubbles": nbub,
+                "composer_headers": (None if not header else {
+                    "workspaceId": header[0],
+                    "head": json.loads(header[1])
+                    if isinstance(header[1], str) else None,
+                }),
+            }
         except sqlite3.Error as e:
             info["global"]["error"] = str(e)
     ws_root = app_dir / "User" / "workspaceStorage"
@@ -1124,26 +1439,90 @@ def cursor_composer_diag(uuid):
                 row = c.execute(
                     "select value from ItemTable where key='composer.composerData'"
                 ).fetchone()
+                wh = None
+                try:
+                    wh = c.execute(
+                        "select workspaceId, value from composerHeaders"
+                        " where composerId = ?", (uuid,)).fetchone()
+                except sqlite3.Error:
+                    wh = None
                 c.close()
-                if not row:
-                    continue
-                data = json.loads(row[0].decode() if isinstance(row[0], bytes) else row[0])
-                allc = data.get("allComposers", [])
+                allc = []
+                if row:
+                    data = json.loads(row[0].decode() if isinstance(row[0], bytes) else row[0])
+                    allc = data.get("allComposers", [])
                 entry = next((ac for ac in allc if ac.get("composerId") == uuid), None)
+                if not (entry or wh):
+                    continue
                 info["workspaces"].append({
                     "workspace": wdb.parent.name,
                     "in_all_composers": bool(entry),
                     "entry": entry,
+                    "in_composer_headers": bool(wh),
                 })
             except (sqlite3.Error, ValueError):
                 continue
     return info
 
 
+def _cursor_header_chats(include_archived=False):
+    """Chats the real app lists from its composerHeaders store (3.x) but that
+    have no local transcript — native 3.x chats whose content lives in the
+    agent store / cloud. Moved-in chats have a transcript and are already
+    covered by the transcript scan, so they are skipped here."""
+    gs = _cursor_appdata_dir() / "User" / "globalStorage" / "state.vscdb"
+    if not gs.is_file():
+        return []
+    workspaces = _cursor_workspaces()
+    try:
+        c = sqlite3.connect(str(gs), timeout=10)
+        rows = c.execute(
+            "SELECT composerId, workspaceId, createdAt, lastUpdatedAt,"
+            " isArchived, value FROM composerHeaders").fetchall()
+        c.close()
+    except sqlite3.Error:
+        return []
+    have = {u for _slug, u, _p in _iter_cursor_transcripts()}
+    out = []
+    for cuuid, ws_id, created, updated, archived, value in rows:
+        if cuuid in have:
+            continue
+        try:
+            head = json.loads(value)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(head, dict):
+            continue
+        if head.get("isDraft") or cuuid == "empty-state-draft":
+            continue
+        if archived and not include_archived:
+            continue
+        folder = workspaces.get(ws_id, (None, None))[1]
+        out.append({
+            "id": f"{ws_id}::{cuuid}",
+            "title": head.get("name") or head.get("subtitle") or "Untitled conversation",
+            "directory": str(folder) if folder is not None else "",
+            "project": ws_id,
+            "time_created": created or 0,
+            "time_updated": updated or 0,
+            "time_archived": (updated or 0) if archived else None,
+            "agent": None,
+            "model": None,
+            "message_count": 0,
+            "local": False,
+        })
+    return out
+
+
 def cursor_projects():
     counts = {}
     for slug, _uuid, _path in _iter_cursor_transcripts():
         counts[slug] = counts.get(slug, 0) + 1
+    # 3.x-native projects have no transcripts but do have listed chats
+    for chat in _cursor_header_chats(include_archived=True):
+        if not chat["project"] or chat["project"] == "empty-window":
+            continue
+        counts.setdefault(chat["project"], 0)
     out = [{"id": slug, "worktree": _cursor_real_path(slug), "session_count": n}
            for slug, n in counts.items()]
     out.sort(key=lambda p: p["worktree"])
@@ -1176,7 +1555,13 @@ def cursor_sessions(project=None, q=None, include_archived=False, limit="200"):
             "agent": None,
             "model": None,
             "message_count": len(msgs),
+            "local": True,
         })
+    # chats the app lists from composerHeaders without a local transcript
+    for chat in _cursor_header_chats(include_archived=include_archived):
+        if project and chat["project"] != project:
+            continue
+        rows.append(chat)
     if q:
         like = f"%{q}%"
         rows = [r for r in rows
@@ -1191,6 +1576,22 @@ def cursor_get_session(sid):
     slug, uuid = sid.split("::", 1)
     path = _cursor_transcript_path(slug, uuid)
     if not path.is_file():
+        # 3.x-native chat: listed from composerHeaders, content not local
+        for chat in _cursor_header_chats(include_archived=True):
+            if chat["id"] == f"{slug}::{uuid}":
+                return {
+                    "id": sid,
+                    "title": chat["title"],
+                    "directory": chat["directory"],
+                    "project": slug,
+                    "time_created": chat["time_created"],
+                    "time_updated": chat["time_updated"],
+                    "time_archived": chat["time_archived"],
+                    "agent": None,
+                    "model": None,
+                    "local": False,
+                    "messages": [],
+                }
         raise HttpError(404, "conversation not found")
     mtime = int(path.stat().st_mtime * 1000)
     return {
@@ -1203,6 +1604,7 @@ def cursor_get_session(sid):
         "time_archived": mtime if _cursor_is_archived(path, uuid) else None,
         "agent": None,
         "model": None,
+        "local": True,
         "messages": _parse_cursor_transcript(path),
     }
 
@@ -1361,17 +1763,31 @@ def _cursor_purge_stores(slug, uuid):
         except sqlite3.Error:
             pass
 
-    # 4. AgentStores (cloud-sync copy)
-    for d in (app_dir / "AgentStores" / "cursor_agent_stores").glob(uuid):
-        if d.is_dir():
-            shutil.rmtree(d, ignore_errors=True)
-            removed.append("cloud sync")
-            break
+    # 4. AgentStores (cloud-sync copy) — 3.x keeps it under %LOCALAPPDATA%
+    #    Cursor, older versions under %APPDATA%; check both. Includes the
+    #    .control metadata dir.
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    store_roots = [app_dir / "AgentStores" / "cursor_agent_stores"]
+    if local_appdata:
+        store_roots.append(Path(local_appdata) / "Cursor" / "AgentStores"
+                           / "cursor_agent_stores")
+    for root in store_roots:
+        if not root.is_dir():
+            continue
+        for d in root.glob(uuid):
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+                removed.append("cloud sync")
+                break
+        ctrl = root / ".control" / uuid
+        if ctrl.is_dir():
+            shutil.rmtree(ctrl, ignore_errors=True)
+            removed.append("agent store control")
 
     # 5. state.vscdb (UI / glass state + composer store)
-    #    The real app lists from the workspace allComposers and loads from the
-    #    global cursorDiskKV (composer record + bubbles), so a purge must clear
-    #    those too or the conversation keeps showing in the real Cursor app.
+    #    The app lists from composerHeaders (3.x) and loads from the global
+    #    cursorDiskKV (composer record + bubbles), so a purge must clear those
+    #    too or the conversation keeps showing in the real Cursor app.
     db = app_dir / "User" / "globalStorage" / "state.vscdb"
     if db.is_file():
         try:
@@ -1382,6 +1798,13 @@ def _cursor_purge_stores(slug, uuid):
                                (f"composerData:{uuid}",)).rowcount
                 n += c.execute("delete from cursorDiskKV where key like ?",
                                (f"bubbleId:{uuid}:%",)).rowcount
+                # the 3.x listing table — the row that keeps it visible
+                has_headers = c.execute(
+                    "select count(*) from sqlite_master"
+                    " where type='table' and name='composerHeaders'").fetchone()[0]
+                if has_headers:
+                    n += c.execute("delete from composerHeaders where composerId = ?",
+                                   (uuid,)).rowcount
             except sqlite3.Error:
                 pass
             c.commit()
@@ -1390,8 +1813,9 @@ def _cursor_purge_stores(slug, uuid):
         except sqlite3.Error:
             pass
 
-    # 5b. workspace allComposers (the sidebar lists from here) — scan every
-    #     workspace and drop this composerId from its composer.composerData.
+    # 5b. workspace stores — 2.x workspaces keep the sidebar list in
+    #     ItemTable composer.composerData; 3.x workspaces carry a local
+    #     composerHeaders table too. Clean both, wherever present.
     ws_root = app_dir / "User" / "workspaceStorage"
     if ws_root.is_dir():
         for wdb in ws_root.glob("*/state.vscdb"):
@@ -1400,24 +1824,28 @@ def _cursor_purge_stores(slug, uuid):
                 row = c.execute(
                     "SELECT value FROM ItemTable WHERE key='composer.composerData'"
                 ).fetchone()
-                if not row:
-                    c.close()
-                    continue
-                data = json.loads(row[0])
-                composers = data.get("allComposers") or []
-                if not any(c0.get("composerId") == uuid for c0 in composers):
-                    c.close()
-                    continue
-                data["allComposers"] = [c0 for c0 in composers
-                                        if c0.get("composerId") != uuid]
-                for key in ("selectedComposerIds", "lastFocusedComposerIds"):
-                    if uuid in (data.get(key) or []):
-                        data[key] = [x for x in data[key] if x != uuid]
-                c.execute("UPDATE ItemTable SET value=? WHERE key='composer.composerData'",
-                          (json.dumps(data),))
+                if row:
+                    data = json.loads(row[0])
+                    composers = data.get("allComposers") or []
+                    if any(c0.get("composerId") == uuid for c0 in composers):
+                        data["allComposers"] = [c0 for c0 in composers
+                                                if c0.get("composerId") != uuid]
+                        for key in ("selectedComposerIds", "lastFocusedComposerIds"):
+                            if uuid in (data.get(key) or []):
+                                data[key] = [x for x in data[key] if x != uuid]
+                        c.execute("UPDATE ItemTable SET value=? WHERE key='composer.composerData'",
+                                  (json.dumps(data),))
+                n = 0
+                try:
+                    n = c.execute("delete from composerHeaders where composerId = ?",
+                                  (uuid,)).rowcount
+                except sqlite3.Error:
+                    n = 0
                 c.commit()
                 c.close()
-                removed.append("workspace list")
+                if row or n:
+                    removed.append("workspace list")
+                    continue
             except (sqlite3.Error, json.JSONDecodeError, OSError):
                 pass
 
